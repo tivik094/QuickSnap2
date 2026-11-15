@@ -13,6 +13,7 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
     private var videoInput: AVAssetWriterInput?
     private var sysAudioInput: AVAssetWriterInput?
     private var micAudioInput: AVAssetWriterInput?
+    private weak var activeHUD: RecordingHUDWindow?
     private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
     private var outputURL: URL?
 
@@ -317,10 +318,13 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
             self.pauseStartPTS = nil
             self.totalPausedDuration = .zero
 
+            let hasMicInput = (mInput != nil)
             let (hud, hudWindowID) = await MainActor.run { () -> (RecordingHUDWindow, CGWindowID) in
                 let w = RecordingHUDWindow(visibleFrame: visibleFrame)
+                w.configureMic(enabled: hasMicInput)
                 w.onPauseToggle = { [weak self] in self?.togglePause() }
                 w.onStop = { [weak self] in self?.stopRecording() }
+                self.activeHUD = w
                 return (w, CGWindowID(w.windowNumber))
             }
 
@@ -434,6 +438,37 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
         if let synced = retimeSampleBuffer(sampleBuffer, newPTS: targetPTS) {
             mInput.append(synced)
         }
+        var hasVoice = false
+        if let block = CMSampleBufferGetDataBuffer(sampleBuffer),
+           let fmt = CMSampleBufferGetFormatDescription(sampleBuffer),
+           let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(fmt)?.pointee {
+            var len = 0
+            var ptr: UnsafeMutablePointer<Int8>?
+            if CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &len, dataPointerOut: &ptr) == noErr,
+               let p = ptr, len >= 4 {
+                let isFloat = (asbd.mFormatFlags & kAudioFormatFlagIsFloat) != 0
+                if isFloat {
+                    let count = len / 4
+                    let peak: Float = p.withMemoryRebound(to: Float.self, capacity: count) { buf in
+                        var m: Float = 0
+                        for i in stride(from: 0, to: count, by: max(1, count / 64)) { m = max(m, abs(buf[i])) }
+                        return m
+                    }
+                    hasVoice = peak > 0.015
+                } else {
+                    let count = len / 2
+                    let peak: Int32 = p.withMemoryRebound(to: Int16.self, capacity: count) { buf in
+                        var m: Int32 = 0
+                        for i in stride(from: 0, to: count, by: max(1, count / 64)) { m = max(m, abs(Int32(buf[i]))) }
+                        return m
+                    }
+                    hasVoice = peak > 350
+                }
+            }
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.activeHUD?.notifyMicSignal(active: hasVoice)
+        }
     }
 
     private func retimeSampleBuffer(_ sampleBuffer: CMSampleBuffer, newPTS: CMTime) -> CMSampleBuffer? {
@@ -540,11 +575,33 @@ private final class RecordingHUDWindow: NSPanel {
 
     private let dotView = NSView()
     private let timeLabel = NSTextField(labelWithString: "00:00")
+    private let micIconView = NSImageView()
     private var pauseBtn: PillButton!
     private var stopBtn: PillButton!
+    private var micEnabled = false
+    private var lastMicPulse: CFTimeInterval = 0
+
+    func configureMic(enabled: Bool) {
+        self.micEnabled = enabled
+        let sym = enabled ? "mic.fill" : "mic.slash.fill"
+        micIconView.image = NSImage(systemSymbolName: sym, accessibilityDescription: "Mic")
+        micIconView.contentTintColor = enabled ? NSColor.white.withAlphaComponent(0.6) : NSColor.systemGray.withAlphaComponent(0.45)
+        micIconView.toolTip = enabled ? "Микрофон включён (зелёный при наличии звука)" : "Микрофон выключен или нет доступа"
+    }
+
+    func notifyMicSignal(active: Bool) {
+        guard micEnabled else { return }
+        let now = CACurrentMediaTime()
+        if active {
+            lastMicPulse = now
+            micIconView.contentTintColor = NSColor.systemGreen
+        } else if now - lastMicPulse > 0.35 {
+            micIconView.contentTintColor = NSColor.white.withAlphaComponent(0.6)
+        }
+    }
 
     init(visibleFrame: CGRect) {
-        let width: CGFloat = 216
+        let width: CGFloat = 238
         let height: CGFloat = 46
         let x = visibleFrame.midX - width / 2
         let y = visibleFrame.minY + 24
@@ -583,8 +640,13 @@ private final class RecordingHUDWindow: NSPanel {
         timeLabel.frame = NSRect(x: 32, y: (height - 18) / 2, width: 52, height: 18)
         root.addSubview(timeLabel)
 
+        micIconView.frame = NSRect(x: 88, y: (height - 16) / 2, width: 16, height: 16)
+        micIconView.imageScaling = .scaleProportionallyDown
+        root.addSubview(micIconView)
+        configureMic(enabled: false)
+
         pauseBtn = PillButton(
-            frame: NSRect(x: 90, y: 8, width: 34, height: 30),
+            frame: NSRect(x: 112, y: 8, width: 34, height: 30),
             title: nil,
             symbolName: "pause.fill",
             cornerRadius: 15
@@ -595,7 +657,7 @@ private final class RecordingHUDWindow: NSPanel {
         root.addSubview(pauseBtn)
 
         stopBtn = PillButton(
-            frame: NSRect(x: 130, y: 8, width: 74, height: 30),
+            frame: NSRect(x: 152, y: 8, width: 74, height: 30),
             title: "Стоп",
             symbolName: "stop.fill",
             isDestructive: true,
