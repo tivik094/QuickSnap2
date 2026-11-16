@@ -451,7 +451,7 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
         badge.layer?.backgroundColor = accentColor.withAlphaComponent(0.25).cgColor
         badge.layer?.borderWidth = 1
         badge.layer?.borderColor = accentColor.withAlphaComponent(0.45).cgColor
-        let verLbl = NSTextField.makeLabel("v2.0.0", size: 11, weight: .semibold, color: .white)
+        let verLbl = NSTextField.makeLabel("v2.1.0", size: 11, weight: .semibold, color: .white)
         verLbl.alignment = .center
         verLbl.frame = NSRect(x: 0, y: 2, width: 54, height: 15)
         badge.addSubview(verLbl)

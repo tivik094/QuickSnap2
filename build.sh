@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-APP_NAME="QuickSnap 2.0.app"
+APP_NAME="QuickSnap 2.1.app"
 APP_PATH="/Applications/$APP_NAME"
 PROJ_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -38,6 +38,6 @@ if [[ " $* " == *" --dmg "* ]]; then
     "$PROJ_DIR/release_dmg.sh"
 fi
 
-echo "🚀 Запускаем QuickSnap 2.0..."
+echo "🚀 Запускаем QuickSnap 2.1..."
 open -a "$APP_PATH"
 echo "✅ Готово!"

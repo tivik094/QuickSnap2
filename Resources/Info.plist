@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDisplayName</key>
-	<string>QuickSnap 2.0</string>
+	<string>QuickSnap 2.1</string>
 	<key>CFBundleExecutable</key>
 	<string>QuickSnap2</string>
 	<key>CFBundleIconFile</key>
@@ -13,11 +13,11 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>QuickSnap 2.0</string>
+	<string>QuickSnap 2.1</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>2.0.0</string>
+	<string>2.1.0</string>
 	<key>CFBundleVersion</key>
 	<string>1</string>
 	<key>LSApplicationCategoryType</key>
@@ -29,8 +29,8 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>QuickSnap 2.0 использует микрофон для записи голосовых комментариев при захвате видео с экрана.</string>
+	<string>QuickSnap 2.1 использует микрофон для записи голосовых комментариев при захвате видео с экрана.</string>
 	<key>NSScreenCaptureUsageDescription</key>
-	<string>QuickSnap 2.0 использует захват экрана для мгновенного создания скриншотов области, окон и записи видео.</string>
+	<string>QuickSnap 2.1 использует захват экрана для мгновенного создания скриншотов области, окон и записи видео.</string>
 </dict>
 </plist>
