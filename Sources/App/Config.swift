@@ -56,9 +56,10 @@ struct KeyShortcut: Codable, Equatable {
     }
 }
 
-// MARK: - Настройки приложения, видео и горячих клавиш
+// MARK: - Настройки приложения, темы, видео и горячих клавиш
 struct Config {
     private static let dirKey = "QuickSnapSaveDirectory"
+    private static let themeStyleKey = "QuickSnapThemeStyle"
     private static let videoFpsKey = "QuickSnapVideoFPS"
     private static let videoCursorKey = "QuickSnapVideoShowCursor"
     private static let videoAskAudioKey = "QuickSnapVideoAskAudio"
@@ -68,6 +69,25 @@ struct Config {
     private static let areaHotkeyKey = "QuickSnapHotkeyArea"
     private static let windowHotkeyKey = "QuickSnapHotkeyWindow"
     private static let videoHotkeyKey = "QuickSnapHotkeyVideo"
+
+    // Дефолт теперь: Нативный macOS (.native)
+    static var themeStyle: AppThemeStyle {
+        get {
+            guard let raw = UserDefaults.standard.string(forKey: themeStyleKey),
+                  let style = AppThemeStyle(rawValue: raw) else {
+                return .native
+            }
+            return style
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: themeStyleKey)
+            NotificationCenter.default.post(name: .quickSnapThemeChanged, object: nil)
+        }
+    }
+
+    static var tokens: ThemeTokens {
+        ThemeTokens(style: themeStyle)
+    }
 
     static let defaultDirectory: URL = {
         let desktop = FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask).first
@@ -94,7 +114,6 @@ struct Config {
         }
     }
 
-    // Параметры видео
     static var videoFPS: Int {
         get {
             let val = UserDefaults.standard.integer(forKey: videoFpsKey)
@@ -123,7 +142,6 @@ struct Config {
         set { UserDefaults.standard.set(newValue, forKey: videoMicAudioKey) }
     }
 
-    // Горячие клавиши
     static var areaShortcut: KeyShortcut {
         get { loadShortcut(key: areaHotkeyKey, fallback: .defaultArea) }
         set { saveShortcut(newValue, key: areaHotkeyKey) }

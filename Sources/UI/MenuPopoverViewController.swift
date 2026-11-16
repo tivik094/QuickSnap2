@@ -1,23 +1,85 @@
 import Cocoa
 import ImageIO
 
-// MARK: - Popover в чистом стиле iScreen Shoter (сетка 3x2 + прокрутка недавних снимков)
+// MARK: - Popover: Нативный macOS (по умолчанию) + Стекло (Glass) + Классика
 final class MenuPopoverViewController: NSViewController {
     var onClosePopover: (() -> Void)?
     private var recentURLs: [URL] = []
+    private var thumbnailCache: [URL: NSImage] = [:]
     private var thumbnailButtons: [NSButton] = []
+    private var themeObserver: NSObjectProtocol?
+
+    deinit {
+        if let observer = themeObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
 
     override func loadView() {
-        let width: CGFloat = 312
-        let height: CGFloat = 342
-        let root = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: width, height: height))
-        root.material = .menu
-        root.blendingMode = .behindWindow
-        root.state = .active
+        let root = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: 316, height: 348))
+        root.appearance = NSAppearance(named: .darkAqua)
+        self.view = root
+        rebuildUI()
 
-        // Верхняя панель: заголовок и общая шестерёнка настроек
-        let titleLabel = makeLabel("QuickSnap", size: 13, weight: .medium, color: .labelColor)
-        titleLabel.frame = NSRect(x: 16, y: height - 30, width: 140, height: 18)
+        themeObserver = NotificationCenter.default.addObserver(
+            forName: .quickSnapThemeChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            self?.rebuildUI()
+        }
+    }
+
+    private func rebuildUI() {
+        guard let root = self.view as? NSVisualEffectView else { return }
+        root.subviews.forEach { $0.removeFromSuperview() }
+        root.layer?.sublayers?.removeAll(where: { $0.name == "GlassHighlightLayer" })
+        thumbnailButtons.removeAll()
+
+        let tokens = Config.tokens
+        let width: CGFloat = 316
+        let height: CGFloat = 348
+
+        root.wantsLayer = true
+        root.layer?.cornerRadius = 13
+        root.layer?.masksToBounds = true
+
+        if tokens.useBlurMaterial {
+            root.material = tokens.popoverMaterial
+            root.blendingMode = .behindWindow
+            root.state = .active
+            root.layer?.backgroundColor = tokens.tintOverlayColor
+            root.layer?.borderWidth = 1.0
+            root.layer?.borderColor = tokens.windowBorderColor
+
+            if tokens.isGlass {
+                let grad = CAGradientLayer()
+                grad.name = "GlassHighlightLayer"
+                grad.frame = root.bounds
+                grad.colors = [
+                    NSColor.white.withAlphaComponent(0.18).cgColor,
+                    NSColor.white.withAlphaComponent(0.03).cgColor,
+                    NSColor.clear.cgColor
+                ]
+                grad.locations = [0.0, 0.35, 1.0]
+                grad.startPoint = CGPoint(x: 0.5, y: 1.0)
+                grad.endPoint = CGPoint(x: 0.5, y: 0.0)
+                root.layer?.insertSublayer(grad, at: 0)
+            }
+        } else {
+            root.state = .inactive
+            let blackBg = NSView(frame: root.bounds)
+            blackBg.wantsLayer = true
+            blackBg.layer?.backgroundColor = tokens.solidBackgroundColor.cgColor
+            blackBg.layer?.cornerRadius = 13
+            blackBg.layer?.borderWidth = 1.0
+            blackBg.layer?.borderColor = tokens.windowBorderColor
+            root.addSubview(blackBg)
+        }
+
+        // Верхняя панель: заголовок и шестерёнка
+        let titleLabel = NSTextField.makeLabel("QuickSnap", size: 13.5, weight: .semibold, color: .white)
+        titleLabel.frame = NSRect(x: 16, y: height - 31, width: 140, height: 19)
         root.addSubview(titleLabel)
 
         let settingsBtn = PillButton(
@@ -32,42 +94,47 @@ final class MenuPopoverViewController: NSViewController {
         settingsBtn.toolTip = "Настройки"
         root.addSubview(settingsBtn)
 
-        // 3 яркие круглые кнопки в ряд: Область, Окно, Видео
-        let colW: CGFloat = (width - 24) / 3
+        // 3 кнопки действий (ровная целочисленная сетка 92 pt)
+        let gap: CGFloat = tokens.isClassic ? 0 : 8
+        let totalInnerW: CGFloat = width - 24
+        let colW: CGFloat = floor((totalInnerW - gap * 2) / 3)
         let actionsY: CGFloat = height - 122
 
-        let areaAction = makeCircleAction(
+        let areaAction = makeActionItem(
             frame: NSRect(x: 12, y: actionsY, width: colW, height: 82),
             icon: "viewfinder",
-            circleColor: NSColor(calibratedRed: 0.85, green: 0.93, blue: 0.16, alpha: 1.0),
-            iconColor: NSColor(calibratedWhite: 0.10, alpha: 1.0),
+            accentColor: tokens.areaAccent,
             title: "Область",
-            shortcut: Config.areaShortcut.displayString
+            shortcut: Config.areaShortcut.displayString,
+            tokens: tokens
         ) { [weak self] in
             self?.onClosePopover?()
             ScreenCaptureManager.shared.capture(windowMode: false)
         }
 
-        let winAction = makeCircleAction(
-            frame: NSRect(x: 12 + colW, y: actionsY, width: colW, height: 82),
+        let winAction = makeActionItem(
+            frame: NSRect(x: floor(12 + colW + gap), y: actionsY, width: colW, height: 82),
             icon: "macwindow",
-            circleColor: NSColor(calibratedRed: 0.22, green: 0.88, blue: 0.96, alpha: 1.0),
-            iconColor: NSColor(calibratedWhite: 0.10, alpha: 1.0),
+            accentColor: tokens.windowAccent,
             title: "Окно",
-            shortcut: Config.windowShortcut.displayString
+            shortcut: Config.windowShortcut.displayString,
+            tokens: tokens
         ) { [weak self] in
             self?.onClosePopover?()
             ScreenCaptureManager.shared.capture(windowMode: true)
         }
 
-        let videoX = 12 + colW * 2
-        let videoAction = makeCircleAction(
-            frame: NSRect(x: videoX, y: actionsY, width: colW, height: 82),
+        let videoShortcutText = tokens.showFpsInVideoShortcut
+            ? "\(Config.videoShortcut.displayString) • \(Config.videoFPS)fps"
+            : Config.videoShortcut.displayString
+
+        let videoAction = makeActionItem(
+            frame: NSRect(x: floor(12 + (colW + gap) * 2), y: actionsY, width: colW, height: 82),
             icon: "video.fill",
-            circleColor: NSColor(calibratedRed: 0.36, green: 0.92, blue: 0.62, alpha: 1.0),
-            iconColor: NSColor(calibratedWhite: 0.10, alpha: 1.0),
+            accentColor: tokens.videoAccent,
             title: "Видео",
-            shortcut: "\(Config.videoShortcut.displayString) • \(Config.videoFPS)fps"
+            shortcut: videoShortcutText,
+            tokens: tokens
         ) { [weak self] in
             self?.onClosePopover?()
             if #available(macOS 13.0, *) {
@@ -85,35 +152,35 @@ final class MenuPopoverViewController: NSViewController {
         root.addSubview(topSep)
 
         // Заголовок секции недавних снимков
-        let recentHeader = makeLabel("Недавние снимки", size: 11, weight: .regular, color: .secondaryLabelColor)
-        recentHeader.frame = NSRect(x: 16, y: actionsY - 30, width: 150, height: 15)
+        let recentHeader = NSTextField.makeLabel("Недавние снимки", size: 11.5, weight: .medium, color: NSColor.white.withAlphaComponent(0.6))
+        recentHeader.frame = NSRect(x: 16, y: actionsY - 30, width: 160, height: 16)
         root.addSubview(recentHeader)
 
-        // Прокручиваемая область для 6 недавних снимков (сетка 3 колонки × 2 ряда)
-        self.recentURLs = ScreenshotWatcher.shared.recentScreenshots(limit: 6)
+        // Прокручиваемая сетка до 18 недавних снимков
+        self.recentURLs = ScreenshotWatcher.shared.recentScreenshots(limit: 18)
         let scrollTopY: CGFloat = actionsY - 36
-        let scrollBottomY: CGFloat = 50
+        let scrollBottomY: CGFloat = 52
         let scrollHeight: CGFloat = scrollTopY - scrollBottomY
         let scrollWidth: CGFloat = width - 32
 
         if recentURLs.isEmpty {
-            let emptyLabel = makeLabel("Сделай снимок — он появится здесь", size: 11, weight: .regular, color: .tertiaryLabelColor)
+            let emptyLabel = NSTextField.makeLabel("Сделай снимок — он появится здесь", size: 11.5, weight: .regular, color: NSColor.white.withAlphaComponent(0.45))
             emptyLabel.frame = NSRect(x: 16, y: scrollBottomY + scrollHeight / 2 - 8, width: scrollWidth, height: 16)
             root.addSubview(emptyLabel)
         } else {
             let scrollView = NSScrollView(frame: NSRect(x: 16, y: scrollBottomY, width: scrollWidth, height: scrollHeight))
             scrollView.hasVerticalScroller = true
             scrollView.hasHorizontalScroller = false
-            scrollView.autohidesScrollers = true
+            scrollView.autohidesScrollers = false
             scrollView.scrollerStyle = .overlay
             scrollView.drawsBackground = false
 
             let cols = 3
             let spacing: CGFloat = 8
-            let thumbW: CGFloat = (scrollWidth - spacing * CGFloat(cols - 1)) / CGFloat(cols)
+            let thumbW: CGFloat = floor((scrollWidth - spacing * CGFloat(cols - 1)) / CGFloat(cols))
             let thumbH: CGFloat = 62
             let rows = Int(ceil(Double(recentURLs.count) / Double(cols)))
-            let docHeight = max(scrollHeight, CGFloat(rows) * thumbH + CGFloat(max(0, rows - 1)) * spacing)
+            let docHeight = max(scrollHeight + 1, CGFloat(rows) * thumbH + CGFloat(max(0, rows - 1)) * spacing + 4)
 
             let docView = FlippedContainerView(frame: NSRect(x: 0, y: 0, width: scrollWidth, height: docHeight))
 
@@ -123,19 +190,14 @@ final class MenuPopoverViewController: NSViewController {
                 let tx = CGFloat(col) * (thumbW + spacing)
                 let ty = CGFloat(row) * (thumbH + spacing)
 
-                let thumbBtn = NSButton(frame: NSRect(x: tx, y: ty, width: thumbW, height: thumbH))
-                thumbBtn.isBordered = false
-                thumbBtn.wantsLayer = true
-                thumbBtn.layer?.cornerRadius = 7
-                thumbBtn.layer?.masksToBounds = true
-                thumbBtn.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.25).cgColor
-                thumbBtn.layer?.borderWidth = 1
-                thumbBtn.layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
-                thumbBtn.imageScaling = .scaleProportionallyUpOrDown
+                let thumbBtn = ThumbnailTileButton(
+                    frame: NSRect(x: tx, y: ty, width: thumbW, height: thumbH),
+                    tokens: tokens
+                ) { [weak self] in
+                    self?.onClosePopover?()
+                    ScreenshotWatcher.shared.openEditor(for: url)
+                }
                 thumbBtn.toolTip = url.lastPathComponent
-                thumbBtn.tag = idx
-                thumbBtn.target = self
-                thumbBtn.action = #selector(openRecent(_:))
                 docView.addSubview(thumbBtn)
                 thumbnailButtons.append(thumbBtn)
             }
@@ -145,43 +207,71 @@ final class MenuPopoverViewController: NSViewController {
             loadThumbnailsAsync(maxPixelSize: Int(max(thumbW, thumbH) * 2))
         }
 
-        // Нижняя компактная панель: папка слева и выход справа
+        // Нижняя панель (чистая, без кисточки)
+        if tokens.isGlass {
+            let footerGlass = NSView(frame: NSRect(x: 12, y: 10, width: width - 24, height: 36))
+            footerGlass.wantsLayer = true
+            footerGlass.layer?.cornerRadius = 10
+            footerGlass.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.10).cgColor
+            footerGlass.layer?.borderWidth = 1.0
+            footerGlass.layer?.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
+            root.addSubview(footerGlass)
+        }
+
         let folderBtn = PillButton(
-            frame: NSRect(x: 16, y: 12, width: 34, height: 30),
+            frame: NSRect(x: 16, y: 13, width: 34, height: 30),
             title: nil,
             symbolName: "folder",
             cornerRadius: 8
         ) { [weak self] in
-            self?.onClosePopover?()
-            NSWorkspace.shared.open(Config.saveDirectory)
+            guard let self = self else { return }
+            let latest = self.recentURLs.first
+            let targetDir = Config.saveDirectory
+            self.onClosePopover?()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                if let latestFile = latest, FileManager.default.fileExists(atPath: latestFile.path) {
+                    NSWorkspace.shared.activateFileViewerSelecting([latestFile])
+                } else {
+                    NSWorkspace.shared.open(targetDir)
+                }
+            }
         }
         folderBtn.toolTip = "Открыть папку: \(Config.saveDirectory.path)"
-
-        let quitBtn = PillButton(
-            frame: NSRect(x: width - 50, y: 12, width: 34, height: 30),
-            title: nil,
-            symbolName: "power",
-            isDestructive: true,
-            cornerRadius: 8
-        ) {
-            NSApp.terminate(nil)
-        }
-        quitBtn.toolTip = "Закрыть QuickSnap"
-
         root.addSubview(folderBtn)
-        root.addSubview(quitBtn)
-        self.view = root
+
+        if tokens.showPowerButtonInFooter {
+            let quitBtn = PillButton(
+                frame: NSRect(x: width - 50, y: 13, width: 34, height: 30),
+                title: nil,
+                symbolName: "power",
+                isDestructive: true,
+                cornerRadius: 8
+            ) {
+                NSApp.terminate(nil)
+            }
+            quitBtn.toolTip = "Закрыть QuickSnap"
+            root.addSubview(quitBtn)
+        }
     }
 
-    // Асинхронный даунсемплинг миниатюр через ImageIO без декодирования 5K-скриншотов в RAM
     private func loadThumbnailsAsync(maxPixelSize: Int) {
         let urls = recentURLs
         let buttons = thumbnailButtons
-        DispatchQueue.global(qos: .userInitiated).async {
+        let existingCache = thumbnailCache
+
+        for (idx, url) in urls.enumerated() where idx < buttons.count {
+            if let cached = existingCache[url] {
+                buttons[idx].image = cached
+            }
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             for (idx, url) in urls.enumerated() where idx < buttons.count {
+                if existingCache[url] != nil { continue }
                 guard let thumb = Self.downsampledThumbnail(at: url, maxPixelSize: maxPixelSize) else { continue }
                 let btn = buttons[idx]
                 DispatchQueue.main.async {
+                    self?.thumbnailCache[url] = thumb
                     btn.image = thumb
                 }
             }
@@ -205,64 +295,115 @@ final class MenuPopoverViewController: NSViewController {
         return NSImage(cgImage: cgThumb, size: NSSize(width: cgThumb.width, height: cgThumb.height))
     }
 
-    private func makeCircleAction(frame: NSRect, icon: String, circleColor: NSColor, iconColor: NSColor, title: String, shortcut: String, action: @escaping () -> Void) -> NSView {
-        let container = HoverCircleContainer(frame: frame, action: action)
+    private func makeActionItem(
+        frame: NSRect,
+        icon: String,
+        accentColor: NSColor,
+        title: String,
+        shortcut: String,
+        tokens: ThemeTokens,
+        action: @escaping () -> Void
+    ) -> NSView {
+        let container = HoverActionContainer(frame: frame, tokens: tokens, action: action)
 
-        let circleSize: CGFloat = 40
-        let circle = NSView(frame: NSRect(x: (frame.width - circleSize) / 2, y: frame.height - circleSize - 2, width: circleSize, height: circleSize))
-        circle.wantsLayer = true
-        circle.layer?.cornerRadius = circleSize / 2
-        circle.layer?.backgroundColor = circleColor.cgColor
-        container.circleView = circle
+        if tokens.iconCircleBackground {
+            let circleSize: CGFloat = 40
+            let circle = NSView(frame: NSRect(x: floor((frame.width - circleSize) / 2), y: frame.height - circleSize - 2, width: circleSize, height: circleSize))
+            circle.wantsLayer = true
+            circle.layer?.cornerRadius = circleSize / 2
+            circle.layer?.backgroundColor = accentColor.cgColor
+            container.iconHolder = circle
 
-        let iv = NSImageView(frame: NSRect(x: (circleSize - 20) / 2, y: (circleSize - 20) / 2, width: 20, height: 20))
-        if let sym = NSImage(systemSymbolName: icon, accessibilityDescription: nil) {
-            iv.image = sym.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .semibold))
-            iv.contentTintColor = iconColor
+            let iv = NSImageView(frame: NSRect(x: 10, y: 10, width: 20, height: 20))
+            if let sym = NSImage(systemSymbolName: icon, accessibilityDescription: nil) {
+                iv.image = sym.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .semibold))
+                iv.contentTintColor = NSColor(calibratedWhite: 0.10, alpha: 1.0)
+            }
+            circle.addSubview(iv)
+            container.addSubview(circle)
+        } else if tokens.isGlass {
+            let iv = NSImageView(frame: NSRect(x: floor((frame.width - 24) / 2), y: frame.height - 36, width: 24, height: 24))
+            iv.wantsLayer = true
+            iv.layer?.shadowColor = accentColor.cgColor
+            iv.layer?.shadowRadius = 7
+            iv.layer?.shadowOpacity = 0.85
+            iv.layer?.shadowOffset = .zero
+            if let sym = NSImage(systemSymbolName: icon, accessibilityDescription: nil) {
+                iv.image = sym.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 18, weight: .semibold))
+                iv.contentTintColor = accentColor
+            }
+            container.addSubview(iv)
+        } else {
+            let badgeSize: CGFloat = 32
+            let badge = NSView(frame: NSRect(x: floor((frame.width - badgeSize) / 2), y: frame.height - badgeSize - 6, width: badgeSize, height: badgeSize))
+            badge.wantsLayer = true
+            badge.layer?.cornerRadius = 8
+            badge.layer?.backgroundColor = accentColor.withAlphaComponent(0.16).cgColor
+            container.addSubview(badge)
+
+            let iv = NSImageView(frame: NSRect(x: 6, y: 6, width: 20, height: 20))
+            if let sym = NSImage(systemSymbolName: icon, accessibilityDescription: nil) {
+                iv.image = sym.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 15, weight: .semibold))
+                iv.contentTintColor = accentColor
+            }
+            badge.addSubview(iv)
         }
-        circle.addSubview(iv)
-        container.addSubview(circle)
 
-        let tLabel = makeLabel(title, size: 12, weight: .regular, color: .labelColor)
+        let tLabel = NSTextField.makeLabel(title, size: 12, weight: .medium, color: .white)
         tLabel.alignment = .center
-        tLabel.frame = NSRect(x: 2, y: 18, width: frame.width - 4, height: 16)
+        tLabel.frame = NSRect(x: 2, y: 20, width: frame.width - 4, height: 16)
         container.addSubview(tLabel)
 
-        let sLabel = makeLabel(shortcut, size: 10.5, weight: .regular, color: NSColor.white.withAlphaComponent(0.6))
+        let sLabel = NSTextField.makeLabel(shortcut, size: 10.5, weight: .regular, color: NSColor.white.withAlphaComponent(tokens.isGlass ? 0.72 : 0.55))
         sLabel.alignment = .center
-        sLabel.frame = NSRect(x: 2, y: 2, width: frame.width - 4, height: 14)
+        sLabel.frame = NSRect(x: 2, y: 4, width: frame.width - 4, height: 14)
         container.addSubview(sLabel)
 
         return container
     }
-
-    private func makeLabel(_ text: String, size: CGFloat, weight: NSFont.Weight, color: NSColor) -> NSTextField {
-        let label = NSTextField(labelWithString: text)
-        label.font = NSFont.systemFont(ofSize: size, weight: weight)
-        label.textColor = color
-        return label
-    }
-
-    @objc private func openRecent(_ sender: NSButton) {
-        guard sender.tag >= 0, sender.tag < recentURLs.count else { return }
-        let url = recentURLs[sender.tag]
-        onClosePopover?()
-        ScreenshotWatcher.shared.openEditor(for: url)
-    }
 }
 
-private final class FlippedContainerView: NSView {
-    override var isFlipped: Bool { true }
-}
-
-private final class HoverCircleContainer: NSView {
-    weak var circleView: NSView?
-    private let actionBlock: () -> Void
+private final class ThumbnailTileButton: NSButton {
+    private let tokens: ThemeTokens
+    private let onClick: () -> Void
+    private let imageLayer = CALayer()
     private var trackingArea: NSTrackingArea?
 
-    init(frame: NSRect, action: @escaping () -> Void) {
-        self.actionBlock = action
+    override var image: NSImage? {
+        didSet {
+            if tokens.cropThumbnailsToFill {
+                imageLayer.contents = image
+            } else {
+                super.image = image
+            }
+        }
+    }
+
+    init(frame: NSRect, tokens: ThemeTokens, onClick: @escaping () -> Void) {
+        self.tokens = tokens
+        self.onClick = onClick
         super.init(frame: frame)
+
+        self.isBordered = false
+        self.title = ""
+        self.wantsLayer = true
+        self.layer?.cornerRadius = 8
+        self.layer?.masksToBounds = true
+        self.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.24).cgColor
+        self.layer?.borderWidth = 1
+        self.layer?.borderColor = NSColor.white.withAlphaComponent(tokens.isGlass ? 0.24 : 0.14).cgColor
+
+        if tokens.cropThumbnailsToFill {
+            imageLayer.frame = bounds
+            imageLayer.contentsGravity = .resizeAspectFill
+            imageLayer.masksToBounds = true
+            self.layer?.addSublayer(imageLayer)
+        } else {
+            self.imageScaling = .scaleProportionallyUpOrDown
+        }
+
+        self.target = self
+        self.action = #selector(handleTap)
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -276,16 +417,71 @@ private final class HoverCircleContainer: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.14
-            circleView?.animator().alphaValue = 0.82
+        layer?.borderColor = NSColor.white.withAlphaComponent(0.65).cgColor
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        layer?.borderColor = NSColor.white.withAlphaComponent(tokens.isGlass ? 0.24 : 0.14).cgColor
+    }
+
+    @objc private func handleTap() {
+        onClick()
+    }
+}
+
+private final class FlippedContainerView: NSView {
+    override var isFlipped: Bool { true }
+}
+
+private final class HoverActionContainer: NSView {
+    weak var iconHolder: NSView?
+    private let tokens: ThemeTokens
+    private let actionBlock: () -> Void
+    private var trackingArea: NSTrackingArea?
+
+    init(frame: NSRect, tokens: ThemeTokens, action: @escaping () -> Void) {
+        self.tokens = tokens
+        self.actionBlock = action
+        super.init(frame: frame)
+
+        if !tokens.isClassic {
+            wantsLayer = true
+            layer?.cornerRadius = 11
+            layer?.backgroundColor = tokens.cardBackgroundColor
+            layer?.borderWidth = 1.0
+            layer?.borderColor = tokens.cardBorderColor
+        }
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = trackingArea { removeTrackingArea(existing) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self, userInfo: nil)
+        trackingArea = area
+        addTrackingArea(area)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        if !tokens.isClassic {
+            layer?.backgroundColor = tokens.cardHoverBackgroundColor
+        } else {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.14
+                iconHolder?.animator().alphaValue = 0.82
+            }
         }
     }
 
     override func mouseExited(with event: NSEvent) {
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.14
-            circleView?.animator().alphaValue = 1.0
+        if !tokens.isClassic {
+            layer?.backgroundColor = tokens.cardBackgroundColor
+        } else {
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.14
+                iconHolder?.animator().alphaValue = 1.0
+            }
         }
     }
 

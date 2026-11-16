@@ -21,6 +21,7 @@ while IFS= read -r -d '' file; do
 done < <(find "$PROJ_DIR/Sources" -name "*.swift" -print0)
 
 swiftc "${SWIFT_FILES[@]}" \
+    -O \
     -framework Cocoa \
     -framework ScreenCaptureKit \
     -framework AVFoundation \
@@ -28,15 +29,15 @@ swiftc "${SWIFT_FILES[@]}" \
     -framework ServiceManagement \
     -o "$APP_PATH/Contents/MacOS/QuickSnap2"
 
-echo "🔏 Подписываем сертификатом QuickSnapDev..."
-plutil -replace NSMicrophoneUsageDescription -string "QuickSnap использует микрофон для записи голоса при захвате видео с экрана." "/Applications/QuickSnap 2.0.app/Contents/Info.plist"
+echo "🧹 Очищаем расширенные атрибуты и подписываем сертификатом QuickSnapDev..."
+xattr -cr "$APP_PATH"
 codesign --force --deep --sign "QuickSnapDev" "$APP_PATH"
+
+if [[ " $* " == *" --dmg "* ]]; then
+    echo "📦 Запускаем сборку DMG-образа..."
+    "$PROJ_DIR/release_dmg.sh"
+fi
 
 echo "🚀 Запускаем QuickSnap 2.0..."
 open -a "$APP_PATH"
 echo "✅ Готово!"
-
-if [[ " $* " == *" --dmg "* ]]; then
-    echo "📦 Запускаем сборку DMG-образа..."
-    /Users/v/Dev/QuickSnap2/release_dmg.sh
-fi

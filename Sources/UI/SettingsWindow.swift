@@ -40,8 +40,11 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
     private let contentContainer = NSView()
     private var pathField: NSTextField?
     private var activeRecorder: ShortcutRecorderButton?
+    private let sidebar = NSVisualEffectView()
+    private let rightPane = NSVisualEffectView()
+    private var themeObserver: NSObjectProtocol?
 
-    private let accentColor = NSColor(calibratedRed: 0.23, green: 0.54, blue: 0.98, alpha: 1.0)
+    private var accentColor: NSColor { Config.tokens.settingsAccent }
 
     init(initialTab: SettingsTab) {
         self.currentTab = initialTab
@@ -59,16 +62,24 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
         self.titlebarAppearsTransparent = true
         self.isMovableByWindowBackground = true
         self.appearance = NSAppearance(named: .darkAqua)
+        self.isOpaque = false
+        self.backgroundColor = .clear
         self.isReleasedWhenClosed = false
         self.delegate = self
 
+        // Убираем серые неактивные заглушки вместо жёлтой и зелёной кнопок
+        self.standardWindowButton(.miniaturizeButton)?.isHidden = true
+        self.standardWindowButton(.zoomButton)?.isHidden = true
+
         let root = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        root.wantsLayer = true
+        root.layer?.cornerRadius = 12
+        root.layer?.masksToBounds = true
 
         // Левый сайдбар
         let sidebarW: CGFloat = 188
-        let sidebar = NSView(frame: NSRect(x: 0, y: 0, width: sidebarW, height: height))
+        sidebar.frame = NSRect(x: 0, y: 0, width: sidebarW, height: height)
         sidebar.wantsLayer = true
-        sidebar.layer?.backgroundColor = NSColor(calibratedRed: 0.13, green: 0.14, blue: 0.16, alpha: 1.0).cgColor
 
         let items: [(SettingsTab, String, String)] = [
             (.general, "Общий", "slider.horizontal.3"),
@@ -91,6 +102,14 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
             tabButtons.append(btn)
         }
 
+        // Аккуратная компактная кнопка выхода внизу сайдбара
+        let sidebarQuit = SidebarQuitButton(
+            frame: NSRect(x: 12, y: 14, width: sidebarW - 24, height: 30)
+        ) {
+            NSApp.terminate(nil)
+        }
+        sidebar.addSubview(sidebarQuit)
+
         root.addSubview(sidebar)
 
         let vSep = NSBox(frame: NSRect(x: sidebarW, y: 0, width: 1, height: height))
@@ -100,9 +119,8 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
         // Правая область
         let rightX = sidebarW + 1
         let rightW = width - rightX
-        let rightPane = NSView(frame: NSRect(x: rightX, y: 0, width: rightW, height: height))
+        rightPane.frame = NSRect(x: rightX, y: 0, width: rightW, height: height)
         rightPane.wantsLayer = true
-        rightPane.layer?.backgroundColor = NSColor(calibratedRed: 0.16, green: 0.17, blue: 0.19, alpha: 1.0).cgColor
 
         headerTitle.font = NSFont.systemFont(ofSize: 13, weight: .semibold)
         headerTitle.textColor = NSColor.white.withAlphaComponent(0.75)
@@ -118,13 +136,57 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
         root.addSubview(rightPane)
 
         self.contentView = root
+        applyWindowMaterials()
         selectTab(initialTab)
+
+        themeObserver = NotificationCenter.default.addObserver(
+            forName: .quickSnapThemeChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self = self else { return }
+            self.applyWindowMaterials()
+            self.tabButtons.forEach { $0.updateAccentColor(self.accentColor) }
+            self.selectTab(self.currentTab)
+        }
+    }
+
+    deinit {
+        if let observer = themeObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+    }
+
+    private func applyWindowMaterials() {
+        let tokens = Config.tokens
+        if tokens.useBlurMaterial {
+            sidebar.material = .sidebar
+            sidebar.blendingMode = .behindWindow
+            sidebar.state = .active
+            sidebar.layer?.backgroundColor = tokens.isGlass
+                ? NSColor(calibratedRed: 0.10, green: 0.12, blue: 0.17, alpha: 0.42).cgColor
+                : NSColor(calibratedRed: 0.10, green: 0.11, blue: 0.14, alpha: 0.78).cgColor
+
+            rightPane.material = tokens.popoverMaterial
+            rightPane.blendingMode = .behindWindow
+            rightPane.state = .active
+            rightPane.layer?.backgroundColor = tokens.tintOverlayColor
+        } else {
+            sidebar.material = .titlebar
+            sidebar.blendingMode = .withinWindow
+            sidebar.state = .inactive
+            sidebar.layer?.backgroundColor = tokens.settingsSidebarBg
+
+            rightPane.material = .windowBackground
+            rightPane.blendingMode = .withinWindow
+            rightPane.state = .inactive
+            rightPane.layer?.backgroundColor = tokens.settingsContentBg
+        }
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         activeRecorder?.stopRecording(cancelled: true)
         self.orderOut(nil)
-        // Вызываем onClose, чтобы SettingsWindowController освободил окно при закрытии крестиком
         onClose?()
         return false
     }
@@ -163,7 +225,7 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
         let w = contentContainer.bounds.width
         let h = contentContainer.bounds.height
 
-        let launchLabel = makeLabel("Открывать приложение при входе в систему", size: 13, weight: .medium, color: .white)
+        let launchLabel = NSTextField.makeLabel("Открывать приложение при входе в систему", size: 13, weight: .medium, color: .white)
         launchLabel.frame = NSRect(x: 24, y: h - 46, width: w - 96, height: 18)
         contentContainer.addSubview(launchLabel)
 
@@ -186,7 +248,7 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
         sep.boxType = .separator
         contentContainer.addSubview(sep)
 
-        let locTitle = makeLabel("Папка сохранения", size: 13, weight: .medium, color: .white)
+        let locTitle = NSTextField.makeLabel("Папка сохранения", size: 13, weight: .medium, color: .white)
         locTitle.frame = NSRect(x: 24, y: h - 98, width: 200, height: 18)
         contentContainer.addSubview(locTitle)
 
@@ -195,11 +257,11 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
         let pathBox = NSView(frame: NSRect(x: 24, y: h - 138, width: pathBoxWidth, height: 32))
         pathBox.wantsLayer = true
         pathBox.layer?.cornerRadius = 8
-        pathBox.layer?.backgroundColor = NSColor(calibratedWhite: 0.22, alpha: 1.0).cgColor
+        pathBox.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.08).cgColor
         pathBox.layer?.borderWidth = 1
-        pathBox.layer?.borderColor = NSColor.white.withAlphaComponent(0.10).cgColor
+        pathBox.layer?.borderColor = NSColor.white.withAlphaComponent(0.12).cgColor
 
-        let tf = makeLabel(Config.saveDirectory.path, size: 12, weight: .regular, color: NSColor.white.withAlphaComponent(0.9))
+        let tf = NSTextField.makeLabel(Config.saveDirectory.path, size: 12, weight: .regular, color: NSColor.white.withAlphaComponent(0.9))
         tf.lineBreakMode = .byTruncatingMiddle
         tf.frame = NSRect(x: 10, y: 7, width: pathBoxWidth - 20, height: 18)
         pathBox.addSubview(tf)
@@ -215,6 +277,26 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
             self?.chooseFolder()
         }
         contentContainer.addSubview(changeBtn)
+
+        let sep2 = NSBox(frame: NSRect(x: 24, y: h - 160, width: w - 48, height: 1))
+        sep2.boxType = .separator
+        contentContainer.addSubview(sep2)
+
+        let themeLabel = NSTextField.makeLabel("Стиль интерфейса", size: 13, weight: .medium, color: .white)
+        themeLabel.frame = NSRect(x: 24, y: h - 190, width: 200, height: 18)
+        contentContainer.addSubview(themeLabel)
+
+        let styles = AppThemeStyle.allCases
+        let currentIdx = styles.firstIndex(of: Config.themeStyle) ?? 0
+        let themeSeg = AccentSegmentedControl(
+            frame: NSRect(x: 24, y: h - 230, width: w - 48, height: 30),
+            options: styles.map { $0.title },
+            selectedIndex: currentIdx,
+            accentColor: accentColor
+        ) { idx in
+            Config.themeStyle = styles[idx]
+        }
+        contentContainer.addSubview(themeSeg)
     }
 
     // MARK: - Вкладка «Видео»
@@ -222,7 +304,7 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
         let w = contentContainer.bounds.width
         let h = contentContainer.bounds.height
 
-        let fpsLabel = makeLabel("Частота кадров (FPS)", size: 13, weight: .medium, color: .white)
+        let fpsLabel = NSTextField.makeLabel("Частота кадров (FPS)", size: 13, weight: .medium, color: .white)
         fpsLabel.frame = NSRect(x: 24, y: h - 46, width: 200, height: 18)
         contentContainer.addSubview(fpsLabel)
 
@@ -236,7 +318,7 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
         }
         contentContainer.addSubview(fpsSeg)
 
-        let cursorLabel = makeLabel("Показывать курсор мыши на записи", size: 13, weight: .medium, color: .white)
+        let cursorLabel = NSTextField.makeLabel("Показывать курсор мыши на записи", size: 13, weight: .medium, color: .white)
         cursorLabel.frame = NSRect(x: 24, y: h - 90, width: 280, height: 18)
         contentContainer.addSubview(cursorLabel)
 
@@ -253,7 +335,7 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
         sep.boxType = .separator
         contentContainer.addSubview(sep)
 
-        let askLabel = makeLabel("Спрашивать про аудио перед стартом", size: 13, weight: .medium, color: .white)
+        let askLabel = NSTextField.makeLabel("Спрашивать про аудио перед стартом", size: 13, weight: .medium, color: .white)
         askLabel.frame = NSRect(x: 24, y: h - 146, width: 290, height: 18)
         contentContainer.addSubview(askLabel)
 
@@ -266,7 +348,7 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
         }
         contentContainer.addSubview(askToggle)
 
-        let sysLabel = makeLabel("Записывать звук приложений (системный)", size: 13, weight: .regular, color: NSColor.white.withAlphaComponent(0.75))
+        let sysLabel = NSTextField.makeLabel("Записывать звук приложений (системный)", size: 13, weight: .regular, color: NSColor.white.withAlphaComponent(0.75))
         sysLabel.frame = NSRect(x: 24, y: h - 186, width: 290, height: 18)
         contentContainer.addSubview(sysLabel)
 
@@ -279,7 +361,7 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
         }
         contentContainer.addSubview(sysToggle)
 
-        let micLabel = makeLabel("Записывать голос с микрофона", size: 13, weight: .regular, color: NSColor.white.withAlphaComponent(0.75))
+        let micLabel = NSTextField.makeLabel("Записывать голос с микрофона", size: 13, weight: .regular, color: NSColor.white.withAlphaComponent(0.75))
         micLabel.frame = NSRect(x: 24, y: h - 224, width: 290, height: 18)
         contentContainer.addSubview(micLabel)
 
@@ -298,7 +380,7 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
         let w = contentContainer.bounds.width
         let h = contentContainer.bounds.height
 
-        let hint = makeLabel("Кликни по кнопке и нажми новое сочетание с ⌘, ⌥, ⌃ или ⇧", size: 11.5, weight: .regular, color: NSColor.white.withAlphaComponent(0.6))
+        let hint = NSTextField.makeLabel("Кликни по кнопке и нажми новое сочетание с ⌘, ⌥, ⌃ или ⇧", size: 11.5, weight: .regular, color: NSColor.white.withAlphaComponent(0.6))
         hint.frame = NSRect(x: 24, y: h - 38, width: w - 48, height: 16)
         contentContainer.addSubview(hint)
 
@@ -311,7 +393,7 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
         for (idx, row) in rows.enumerated() {
             let y = h - 84 - CGFloat(idx) * 48
 
-            let title = makeLabel(row.0, size: 13, weight: .medium, color: .white)
+            let title = NSTextField.makeLabel(row.0, size: 13, weight: .medium, color: .white)
             title.frame = NSRect(x: 24, y: y + 6, width: w - 176, height: 18)
             contentContainer.addSubview(title)
 
@@ -352,19 +434,123 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
     }
 
     // MARK: - Вкладка «О программе»
+    private var isAboutSpecsExpanded = false
+    private var isAboutLegalExpanded = false
+
     private func buildAboutTab() {
         let w = contentContainer.bounds.width
         let h = contentContainer.bounds.height
 
-        let name = makeLabel("QuickSnap 2.0", size: 16, weight: .semibold, color: .white)
-        name.frame = NSRect(x: 24, y: h - 48, width: 250, height: 22)
+        let name = NSTextField.makeLabel("QuickSnap", size: 18, weight: .semibold, color: .white)
+        name.frame = NSRect(x: 24, y: h - 46, width: 105, height: 24)
         contentContainer.addSubview(name)
 
-        let desc = NSTextField(wrappingLabelWithString: "Нативная утилита macOS для быстрых скриншотов, аннотаций и записи экрана в MP4 с системным звуком и микрофоном на базе ScreenCaptureKit.")
-        desc.font = NSFont.systemFont(ofSize: 13, weight: .regular)
-        desc.textColor = NSColor.white.withAlphaComponent(0.72)
-        desc.frame = NSRect(x: 24, y: h - 118, width: w - 48, height: 60)
+        let badge = NSView(frame: NSRect(x: 126, y: h - 43, width: 54, height: 20))
+        badge.wantsLayer = true
+        badge.layer?.cornerRadius = 6
+        badge.layer?.backgroundColor = accentColor.withAlphaComponent(0.25).cgColor
+        badge.layer?.borderWidth = 1
+        badge.layer?.borderColor = accentColor.withAlphaComponent(0.45).cgColor
+        let verLbl = NSTextField.makeLabel("v2.0.0", size: 11, weight: .semibold, color: .white)
+        verLbl.alignment = .center
+        verLbl.frame = NSRect(x: 0, y: 2, width: 54, height: 15)
+        badge.addSubview(verLbl)
+        contentContainer.addSubview(badge)
+
+        let desc = NSTextField(wrappingLabelWithString: "Лёгкая нативная утилита для macOS: мгновенные скриншоты области и окон, редактор аннотаций и запись экрана в MP4 (60 FPS) со звуком системы и микрофона.")
+        desc.font = NSFont.systemFont(ofSize: 12.5, weight: .regular)
+        desc.textColor = NSColor.white.withAlphaComponent(0.75)
+        desc.frame = NSRect(x: 24, y: h - 110, width: w - 48, height: 54)
         contentContainer.addSubview(desc)
+
+        var cursorY: CGFloat = h - 148
+
+        // Спойлер 1: Технические детали
+        let specsSpoiler = AboutSpoilerButton(
+            frame: NSRect(x: 24, y: cursorY, width: w - 48, height: 28),
+            title: "Технические детали",
+            isExpanded: isAboutSpecsExpanded
+        ) { [weak self] in
+            self?.isAboutSpecsExpanded.toggle()
+            if self?.isAboutSpecsExpanded == true { self?.isAboutLegalExpanded = false }
+            self?.selectTab(.about)
+        }
+        contentContainer.addSubview(specsSpoiler)
+        cursorY -= 8
+
+        if isAboutSpecsExpanded {
+            let cardH: CGFloat = 88
+            let card = NSView(frame: NSRect(x: 24, y: cursorY - cardH, width: w - 48, height: cardH))
+            card.wantsLayer = true
+            card.layer?.cornerRadius = 10
+            card.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.06).cgColor
+            card.layer?.borderWidth = 1
+            card.layer?.borderColor = NSColor.white.withAlphaComponent(0.10).cgColor
+
+            let specs: [(String, String)] = [
+                ("Захват и видео:", "ScreenCaptureKit • ImageIO"),
+                ("Архитектура:", "Swift 5 • Нативный AppKit"),
+                ("Совместимость:", "macOS 13.0 Ventura и новее")
+            ]
+            for (idx, row) in specs.enumerated() {
+                let y = 62 - CGFloat(idx) * 24
+                let kLbl = NSTextField.makeLabel(row.0, size: 12, weight: .medium, color: NSColor.white.withAlphaComponent(0.55))
+                kLbl.frame = NSRect(x: 14, y: y, width: 132, height: 16)
+                card.addSubview(kLbl)
+
+                let vLbl = NSTextField.makeLabel(row.1, size: 12, weight: .medium, color: NSColor.white.withAlphaComponent(0.92))
+                vLbl.frame = NSRect(x: 150, y: y, width: card.bounds.width - 162, height: 16)
+                card.addSubview(vLbl)
+            }
+            contentContainer.addSubview(card)
+            cursorY -= (cardH + 8)
+        }
+
+        // Спойлер 2: Политика конфиденциальности и условия
+        let legalSpoiler = AboutSpoilerButton(
+            frame: NSRect(x: 24, y: cursorY - 28, width: w - 48, height: 28),
+            title: "Политика конфиденциальности и условия",
+            isExpanded: isAboutLegalExpanded
+        ) { [weak self] in
+            self?.isAboutLegalExpanded.toggle()
+            if self?.isAboutLegalExpanded == true { self?.isAboutSpecsExpanded = false }
+            self?.selectTab(.about)
+        }
+        contentContainer.addSubview(legalSpoiler)
+        cursorY -= 36
+
+        if isAboutLegalExpanded {
+            let cardH: CGFloat = 96
+            let card = NSView(frame: NSRect(x: 24, y: cursorY - cardH, width: w - 48, height: cardH))
+            card.wantsLayer = true
+            card.layer?.cornerRadius = 10
+            card.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.06).cgColor
+            card.layer?.borderWidth = 1
+            card.layer?.borderColor = NSColor.white.withAlphaComponent(0.10).cgColor
+
+            let legalText = NSTextField(wrappingLabelWithString: "• Приватность: все снимки и видео хранятся только локально на вашем Mac. Приложение не собирает телеметрию и не отправляет данные в сеть.\n• Условия: ПО предоставляется «как есть» (AS IS). Пользователь самостоятельно отвечает за соблюдение прав при записи экрана.")
+            legalText.font = NSFont.systemFont(ofSize: 11.5, weight: .regular)
+            legalText.textColor = NSColor.white.withAlphaComponent(0.82)
+            legalText.frame = NSRect(x: 12, y: 8, width: card.bounds.width - 24, height: cardH - 16)
+            card.addSubview(legalText)
+
+            contentContainer.addSubview(card)
+            cursorY -= (cardH + 10)
+        } else {
+            cursorY -= 6
+        }
+
+        let githubBtn = PillButton(
+            frame: NSRect(x: 24, y: cursorY - 32, width: 164, height: 32),
+            title: "GitHub проекта",
+            symbolName: "arrow.up.right.square",
+            cornerRadius: 8
+        ) {
+            if let url = URL(string: "https://github.com/tivik094/QuickSnap2") {
+                NSWorkspace.shared.open(url)
+            }
+        }
+        contentContainer.addSubview(githubBtn)
     }
 
     private func chooseFolder() {
@@ -382,19 +568,12 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
             NSSound(named: "Glass")?.play()
         }
     }
-
-    private func makeLabel(_ text: String, size: CGFloat, weight: NSFont.Weight, color: NSColor) -> NSTextField {
-        let label = NSTextField(labelWithString: text)
-        label.font = NSFont.systemFont(ofSize: size, weight: weight)
-        label.textColor = color
-        return label
-    }
 }
 
 // MARK: - Интерактивная кнопка записи горячей клавиши
 private final class ShortcutRecorderButton: NSView {
     private var shortcut: KeyShortcut
-    private let accentColor: NSColor
+    private var accentColor: NSColor
     private let onActivate: (ShortcutRecorderButton) -> Void
     private let onShortcutRecorded: (KeyShortcut) -> Void
 
@@ -438,13 +617,13 @@ private final class ShortcutRecorderButton: NSView {
 
     private func refreshUI() {
         if isRecordingKeys {
-            bgView.layer?.backgroundColor = accentColor.withAlphaComponent(0.22).cgColor
-            bgView.layer?.borderColor = accentColor.cgColor
+            bgView.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.16).cgColor
+            bgView.layer?.borderColor = NSColor.white.withAlphaComponent(0.32).cgColor
             label.stringValue = "Нажмите клавиши…"
             label.font = NSFont.systemFont(ofSize: 11.5, weight: .medium)
             label.textColor = .white
         } else {
-            bgView.layer?.backgroundColor = NSColor(calibratedWhite: 0.24, alpha: 1.0).cgColor
+            bgView.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.10).cgColor
             bgView.layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
             label.stringValue = shortcut.displayString
             label.font = NSFont.monospacedSystemFont(ofSize: 12.5, weight: .semibold)
@@ -507,18 +686,23 @@ private final class ShortcutRecorderButton: NSView {
     }
 }
 
-// MARK: - Кнопка вкладки сайдбара без размытия текста
+// MARK: - Кнопка вкладки сайдбара
 private final class SidebarTabItem: NSView {
     private let bgView = NSView()
     private let iconView = NSImageView()
     private let label = NSTextField(labelWithString: "")
-    private let accentColor: NSColor
+    private var accentColor: NSColor
     private let onClick: () -> Void
     private var trackingArea: NSTrackingArea?
     private var isHovered = false
 
     var isSelected: Bool = false {
         didSet { updateStyle() }
+    }
+
+    func updateAccentColor(_ color: NSColor) {
+        self.accentColor = color
+        updateStyle()
     }
 
     init(frame: NSRect, title: String, symbol: String, accentColor: NSColor, onClick: @escaping () -> Void) {
@@ -584,10 +768,73 @@ private final class SidebarTabItem: NSView {
     }
 }
 
+// MARK: - Деликатная кнопка выхода внизу сайдбара
+private final class SidebarQuitButton: NSView {
+    private let bgView = NSView()
+    private let onClick: () -> Void
+    private var trackingArea: NSTrackingArea?
+    private var isHovered = false
+
+    init(frame: NSRect, onClick: @escaping () -> Void) {
+        self.onClick = onClick
+        super.init(frame: frame)
+
+        bgView.frame = bounds
+        bgView.wantsLayer = true
+        bgView.layer?.cornerRadius = 7
+        addSubview(bgView)
+
+        let iv = NSImageView(frame: NSRect(x: 10, y: 8, width: 14, height: 14))
+        if let sym = NSImage(systemSymbolName: "power", accessibilityDescription: nil) {
+            iv.image = sym.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 12, weight: .medium))
+            iv.contentTintColor = NSColor(calibratedRed: 1.0, green: 0.45, blue: 0.45, alpha: 0.9)
+        }
+        addSubview(iv)
+
+        let lbl = NSTextField(labelWithString: "Выйти из QuickSnap")
+        lbl.font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        lbl.textColor = NSColor.white.withAlphaComponent(0.65)
+        lbl.frame = NSRect(x: 29, y: 7, width: frame.width - 33, height: 16)
+        addSubview(lbl)
+
+        updateStyle()
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    private func updateStyle() {
+        bgView.layer?.backgroundColor = NSColor.white.withAlphaComponent(isHovered ? 0.08 : 0.0).cgColor
+    }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = trackingArea { removeTrackingArea(existing) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self, userInfo: nil)
+        trackingArea = area
+        addTrackingArea(area)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovered = true
+        updateStyle()
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovered = false
+        updateStyle()
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if bounds.contains(convert(event.locationInWindow, from: nil)) {
+            onClick()
+        }
+    }
+}
+
 // MARK: - Яркий нативный тумблер
 private final class AccentToggle: NSView {
     private var isOn: Bool
-    private let accentColor: NSColor
+    private var accentColor: NSColor
     private let onChange: (Bool) -> Void
     private let knob = NSView()
 
@@ -638,13 +885,13 @@ private final class AccentToggle: NSView {
     }
 }
 
-// MARK: - Чёткий переключатель сегментов (30 FPS / 60 FPS) без размытия текста
+// MARK: - Переключатель сегментов без обрезки текста
 private final class AccentSegmentedControl: NSView {
     private let bgView = NSView()
     private let thumbView = NSView()
     private var labels: [NSTextField] = []
     private var selectedIndex: Int
-    private let accentColor: NSColor
+    private var accentColor: NSColor
     private let onSelect: (Int) -> Void
 
     init(frame: NSRect, options: [String], selectedIndex: Int, accentColor: NSColor, onSelect: @escaping (Int) -> Void) {
@@ -656,9 +903,9 @@ private final class AccentSegmentedControl: NSView {
         bgView.frame = bounds
         bgView.wantsLayer = true
         bgView.layer?.cornerRadius = 8
-        bgView.layer?.backgroundColor = NSColor(calibratedWhite: 0.22, alpha: 1.0).cgColor
+        bgView.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.08).cgColor
         bgView.layer?.borderWidth = 1
-        bgView.layer?.borderColor = NSColor.white.withAlphaComponent(0.10).cgColor
+        bgView.layer?.borderColor = NSColor.white.withAlphaComponent(0.12).cgColor
         addSubview(bgView)
 
         let segW = floor((frame.width - 4) / CGFloat(options.count))
@@ -700,5 +947,64 @@ private final class AccentSegmentedControl: NSView {
             self.thumbView.animator().frame.origin.x = 2 + CGFloat(idx) * segW
         }
         onSelect(idx)
+    }
+}
+
+// MARK: - Кнопка-спойлер для технических характеристик
+private final class AboutSpoilerButton: NSView {
+    private let bgView = NSView()
+    private let onToggle: () -> Void
+    private var trackingArea: NSTrackingArea?
+    private var isHovered = false
+
+    init(frame: NSRect, title: String, isExpanded: Bool, onToggle: @escaping () -> Void) {
+        self.onToggle = onToggle
+        super.init(frame: frame)
+
+        bgView.frame = bounds
+        bgView.wantsLayer = true
+        bgView.layer?.cornerRadius = 8
+        bgView.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.05).cgColor
+        bgView.layer?.borderWidth = 1
+        bgView.layer?.borderColor = NSColor.white.withAlphaComponent(0.09).cgColor
+        addSubview(bgView)
+
+        let chevron = NSImageView(frame: NSRect(x: 10, y: 9, width: 12, height: 12))
+        let symName = isExpanded ? "chevron.down" : "chevron.right"
+        if let sym = NSImage(systemSymbolName: symName, accessibilityDescription: nil) {
+            chevron.image = sym.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10, weight: .semibold))
+            chevron.contentTintColor = NSColor.white.withAlphaComponent(0.65)
+        }
+        addSubview(chevron)
+
+        let lbl = NSTextField.makeLabel(title, size: 12, weight: .medium, color: NSColor.white.withAlphaComponent(0.8))
+        lbl.frame = NSRect(x: 28, y: 7, width: frame.width - 40, height: 16)
+        addSubview(lbl)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let existing = trackingArea { removeTrackingArea(existing) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self, userInfo: nil)
+        trackingArea = area
+        addTrackingArea(area)
+    }
+
+    override func mouseEntered(with event: NSEvent) {
+        isHovered = true
+        bgView.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.09).cgColor
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        isHovered = false
+        bgView.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.05).cgColor
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        if bounds.contains(convert(event.locationInWindow, from: nil)) {
+            onToggle()
+        }
     }
 }

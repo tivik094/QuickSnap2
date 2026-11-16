@@ -1,4 +1,5 @@
 import Cocoa
+import QuartzCore
 
 final class PillButton: NSView {
     private let bgView = NSView()
@@ -21,6 +22,8 @@ final class PillButton: NSView {
         self.isDestructive = isDestructive
         self.actionBlock = action
         super.init(frame: frame)
+
+        self.wantsLayer = true
 
         bgView.frame = bounds
         bgView.wantsLayer = true
@@ -76,7 +79,8 @@ final class PillButton: NSView {
 
     private func updateBackground() {
         if isAccent || isSelected {
-            bgView.layer?.backgroundColor = NSColor(calibratedRed: 0.23, green: 0.54, blue: 0.98, alpha: isHovered ? 0.85 : 1.0).cgColor
+            let accent = Config.tokens.settingsAccent
+            bgView.layer?.backgroundColor = accent.withAlphaComponent(isHovered ? 0.85 : 1.0).cgColor
             bgView.layer?.borderColor = NSColor.white.withAlphaComponent(0.22).cgColor
         } else if isDestructive {
             bgView.layer?.backgroundColor = NSColor.systemRed.withAlphaComponent(isHovered ? 0.28 : 0.16).cgColor
@@ -84,6 +88,32 @@ final class PillButton: NSView {
         } else {
             bgView.layer?.backgroundColor = NSColor.white.withAlphaComponent(isHovered ? 0.14 : 0.08).cgColor
             bgView.layer?.borderColor = NSColor.white.withAlphaComponent(0.12).cgColor
+        }
+    }
+
+    private func animateScale(to scale: CGFloat, duration: CFTimeInterval, spring: Bool = false) {
+        guard let layer = self.layer else { return }
+        if layer.anchorPoint != CGPoint(x: 0.5, y: 0.5) {
+            layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+            layer.position = CGPoint(x: frame.midX, y: frame.midY)
+        }
+        let targetTransform = CATransform3DMakeScale(scale, scale, 1.0)
+        if spring {
+            let anim = CASpringAnimation(keyPath: "transform")
+            anim.fromValue = layer.presentation()?.transform ?? layer.transform
+            anim.toValue = targetTransform
+            anim.damping = 14
+            anim.stiffness = 280
+            anim.mass = 0.8
+            anim.duration = anim.settlingDuration
+            layer.transform = targetTransform
+            layer.add(anim, forKey: "pressSpring")
+        } else {
+            CATransaction.begin()
+            CATransaction.setAnimationDuration(duration)
+            CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeOut))
+            layer.transform = targetTransform
+            CATransaction.commit()
         }
     }
 
@@ -102,10 +132,16 @@ final class PillButton: NSView {
 
     override func mouseExited(with event: NSEvent) {
         isHovered = false
+        animateScale(to: 1.0, duration: 0.12)
         updateBackground()
     }
 
+    override func mouseDown(with event: NSEvent) {
+        animateScale(to: 0.93, duration: 0.08)
+    }
+
     override func mouseUp(with event: NSEvent) {
+        animateScale(to: 1.0, duration: 0.22, spring: true)
         if bounds.contains(convert(event.locationInWindow, from: nil)) {
             actionBlock()
         }
