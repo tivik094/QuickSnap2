@@ -69,7 +69,7 @@ if let tiff = img.tiffRepresentation,
 }
 '
 
-cp -R "/Applications/QuickSnap 2.0.app" "$STAGING/"
+cp -R "/Applications/QuickSnap 2.0.app" "$STAGING/" && xattr -cr "$STAGING"
 ln -s /Applications "$STAGING/Applications"
 
 cat << 'EOF' > "$STAGING/Снять карантин.command"
@@ -79,11 +79,12 @@ if [ -d "$APP_PATH" ]; then
     xattr -cr "$APP_PATH"
     echo "✅ Карантин снят! Запускаю QuickSnap 2.0..."
     open "$APP_PATH"
+    (sleep 1.2 && osascript -e 'tell application "Terminal" to close (every window whose name contains "QuickSnap" or name contains ".command") saving no') >/dev/null 2>&1 &
+    exit 0
 else
     echo "⚠️ Сначала перетащите «QuickSnap 2.0» в папку «Applications» (Программы), затем запустите этот файл снова."
     read -r -p "Нажмите Enter, чтобы закрыть окно..."
-(sleep 0.3 && osascript -e 'tell application "Terminal" to close (every window whose name contains "QuickSnap" or name contains ".command") saving no') >/dev/null 2>&1 &
-exit 0
+    exit 1
 fi
 EOF
 chmod +x "$STAGING/Снять карантин.command"
@@ -91,7 +92,7 @@ chmod +x "$STAGING/Снять карантин.command"
 cat << 'EOF' > "$STAGING/Сбросить и удалить.command"
 #!/bin/bash
 APP_PATH="/Applications/QuickSnap 2.0.app"
-BUNDLE_ID="com.v.QuickSnap2"
+BUNDLE_ID="com.viktor.quicksnap2"
 
 if [ -f "$APP_PATH/Contents/Info.plist" ]; then
     DETECTED_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PATH/Contents/Info.plist" 2>/dev/null)
@@ -115,6 +116,7 @@ rm -rf "$HOME/Library/Preferences/"*QuickSnap*
 killall cfprefsd 2>/dev/null || true
 tccutil reset All "$BUNDLE_ID" 2>/dev/null || true
 tccutil reset ScreenCapture "$BUNDLE_ID" 2>/dev/null || true
+tccutil reset Microphone "$BUNDLE_ID" 2>/dev/null || true
 
 echo ""
 echo "✅ QuickSnap 2.0, настройки и разрешения полностью удалены."
@@ -135,7 +137,7 @@ QuickSnap 2.0 — лёгкая нативная утилита в строке �
 
 Что умеет:
 • Скриншот выбранной области или отдельного окна с 1:1 Retina-чёткостью.
-• Встроенный редактор разметки (стрелки, рамки, выделение, текст, размытие).
+• Встроенный редактор разметки (стрелки, рамки, размытие).
 • Плавающее превью после снимка: быстрое копирование в буфер, переход
   к разметке, показ файла в Finder или удаление в один клик.
 • Запись видео с экрана в MP4 (HEVC / H.265) с выбором 30 или 60 FPS.
