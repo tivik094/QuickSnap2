@@ -10,6 +10,10 @@ final class HotKeyManager {
     private var hotKeyRefs: [EventHotKeyRef] = []
     private let signature: OSType = 0x51534E50 // 'QSNP'
 
+    deinit {
+        unregisterAll()
+    }
+
     func registerDefaults() {
         unregisterAll()
 
@@ -35,8 +39,9 @@ final class HotKeyManager {
                 )
                 guard status == noErr else { return status }
                 let manager = Unmanaged<HotKeyManager>.fromOpaque(userData).takeUnretainedValue()
+                let keyID = hotKeyID.id
                 DispatchQueue.main.async {
-                    manager.handleHotKey(id: hotKeyID.id)
+                    manager.handleHotKey(id: keyID)
                 }
                 return noErr
             },

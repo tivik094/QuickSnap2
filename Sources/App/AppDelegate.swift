@@ -1,46 +1,58 @@
 import Cocoa
-import Carbon
 import ServiceManagement
 
 // MARK: - Приложение в Menu Bar с красивой иконкой и анимацией
-class AppDelegate: NSObject, NSApplicationDelegate {
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     var statusItem: NSStatusItem!
     var popover: NSPopover!
     private var isRecordingVideo = false
-    
+    private var iconResetWorkItem: DispatchWorkItem?
+
+    private lazy var defaultIcon: NSImage = makeMenuBarIcon(isSuccess: false)
+    private lazy var successIcon: NSImage = makeMenuBarIcon(isSuccess: true)
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupMenuBar()
-        ScreenshotWatcher.shared.onNewScreenshotCaptured = { [weak self] in
-            self?.pulseStatusIcon()
-        }
         Config.ensureInitialDirectorySetup()
-        ScreenshotWatcher.shared.startWatching()
-        HotKeyManager.shared.registerDefaults()
-        if #available(macOS 13.0, *) {
-            ScreenRecorderManager.shared.onRecordingStateChanged = { [weak self] recording, isPaused, timeText in
-                self?.updateRecordingIndicator(recording: recording, isPaused: isPaused, timeText: timeText)
+
+        ScreenshotWatcher.shared.onNewScreenshotCaptured = { [weak self] in
+            Task { @MainActor in
+                self?.pulseStatusIcon()
             }
         }
-        enableLaunchAtLogin()
+        ScreenshotWatcher.shared.startWatching()
+        HotKeyManager.shared.registerDefaults()
+
+        if #available(macOS 13.0, *) {
+            ScreenRecorderManager.shared.onRecordingStateChanged = { [weak self] recording, isPaused, timeText in
+                Task { @MainActor in
+                    self?.updateRecordingIndicator(recording: recording, isPaused: isPaused, timeText: timeText)
+                }
+            }
+        }
+        enableLaunchAtLoginIfNeeded()
     }
-    
+
     private func setupMenuBar() {
         statusItem = NSStatusBar.system.statusItem(withLength: 26)
         if let button = statusItem.button {
-            button.image = makeMenuBarIcon(isSuccess: false)
+            button.image = defaultIcon
             button.imageScaling = .scaleNone
             button.action = #selector(togglePopover(_:))
             button.target = self
             button.sendAction(on: [.leftMouseUp, .rightMouseUp])
+            button.toolTip = "QuickSnap 2.0"
         }
-        
+
         popover = NSPopover()
         popover.behavior = .transient
         popover.animates = true
+        popover.delegate = self
     }
-    
+
     @objc private func togglePopover(_ sender: AnyObject?) {
         if isRecordingVideo {
             if #available(macOS 13.0, *) {
@@ -62,9 +74,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             popover.contentViewController?.view.window?.makeKey()
         }
     }
-    
+
+    func popoverDidClose(_ notification: Notification) {
+        popover.contentViewController = nil
+    }
+
     private func updateRecordingIndicator(recording: Bool, isPaused: Bool, timeText: String) {
         isRecordingVideo = recording
+        iconResetWorkItem?.cancel()
+        iconResetWorkItem = nil
+
         guard let button = statusItem.button else { return }
         if recording {
             statusItem.length = NSStatusItem.variableLength
@@ -83,7 +102,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             button.title = ""
             button.contentTintColor = nil
             button.imagePosition = .imageOnly
-            button.image = makeMenuBarIcon(isSuccess: false)
+            button.image = defaultIcon
             button.toolTip = "QuickSnap 2.0"
         }
     }
@@ -94,7 +113,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NSColor.black.setStroke()
             NSColor.black.setFill()
 
-            // 1. Четыре уголка видоискателя (18x18, толщина 1.6pt, выровнено по сетке)
             let framePath = NSBezierPath()
             framePath.lineWidth = 1.6
             framePath.lineCapStyle = .round
@@ -142,21 +160,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 check.line(to: NSPoint(x: 12.8, y: 11.5))
                 check.stroke()
             } else {
-                // 2. Крупный корпус камеры внутри рамки (11.6 x 8.0)
                 let bodyRect = NSRect(x: 3.2, y: 4.4, width: 11.6, height: 8.0)
                 let bodyPath = NSBezierPath(roundedRect: bodyRect, xRadius: 1.6, yRadius: 1.6)
                 bodyPath.fill()
 
-                // Выступ видоискателя сверху камеры
                 let topRect = NSRect(x: 6.7, y: 12.1, width: 4.6, height: 1.6)
                 NSBezierPath(roundedRect: topRect, xRadius: 0.7, yRadius: 0.7).fill()
 
-                // Прозрачный объектив (крупный вырез через destinationOut)
                 NSGraphicsContext.current?.compositingOperation = .destinationOut
                 let outerLens = NSBezierPath(ovalIn: NSRect(x: 6.5, y: 5.9, width: 5.0, height: 5.0))
                 outerLens.fill()
 
-                // Точка в центре объектива
                 NSGraphicsContext.current?.compositingOperation = .sourceOver
                 let innerLens = NSBezierPath(ovalIn: NSRect(x: 7.9, y: 7.3, width: 2.2, height: 2.2))
                 innerLens.fill()
@@ -168,17 +182,25 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func pulseStatusIcon() {
-        guard let button = statusItem.button else { return }
-        button.image = makeMenuBarIcon(isSuccess: true)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-            button.image = self.makeMenuBarIcon(isSuccess: false)
+        guard !isRecordingVideo, let button = statusItem.button else { return }
+        iconResetWorkItem?.cancel()
+        button.image = successIcon
+
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, !self.isRecordingVideo else { return }
+            self.statusItem.button?.image = self.defaultIcon
         }
+        iconResetWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2, execute: workItem)
     }
-    
-    private func enableLaunchAtLogin() {
+
+    private func enableLaunchAtLoginIfNeeded() {
+        let key = "hasConfiguredInitialLaunchAtLogin"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        UserDefaults.standard.set(true, forKey: key)
+
         if SMAppService.mainApp.status != .enabled {
             try? SMAppService.mainApp.register()
         }
     }
 }
-

@@ -11,6 +11,8 @@ enum SettingsTab: Int {
 
 final class SettingsWindowController {
     static let shared = SettingsWindowController()
+    private init() {}
+
     private var window: SettingsWindow?
 
     func show(tab: SettingsTab = .general) {
@@ -122,6 +124,8 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         activeRecorder?.stopRecording(cancelled: true)
         self.orderOut(nil)
+        // Вызываем onClose, чтобы SettingsWindowController освободил окно при закрытии крестиком
+        onClose?()
         return false
     }
 
@@ -379,10 +383,6 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
         }
     }
 
-    @objc private func fpsChanged(_ sender: NSSegmentedControl) {
-        Config.videoFPS = (sender.selectedSegment == 0) ? 30 : 60
-    }
-
     private func makeLabel(_ text: String, size: CGFloat, weight: NSFont.Weight, color: NSColor) -> NSTextField {
         let label = NSTextField(labelWithString: text)
         label.font = NSFont.systemFont(ofSize: size, weight: weight)
@@ -470,14 +470,12 @@ private final class ShortcutRecorderButton: NSView {
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
             guard let self = self, self.isRecordingKeys else { return event }
 
-            // Esc отменяет ввод
             if event.keyCode == UInt16(kVK_Escape) {
                 self.stopRecording(cancelled: true)
                 return nil
             }
 
             let mods = KeyShortcut.carbonModifiers(from: event.modifierFlags)
-            // Требуем хотя бы один модификатор (Command, Option, Control или Shift)
             guard mods != 0 else {
                 NSSound.beep()
                 return nil
@@ -564,8 +562,9 @@ private final class SidebarTabItem: NSView {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let existing = trackingArea { removeTrackingArea(existing) }
-        trackingArea = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self, userInfo: nil)
-        addTrackingArea(trackingArea!)
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self, userInfo: nil)
+        trackingArea = area
+        addTrackingArea(area)
     }
 
     override func mouseEntered(with event: NSEvent) {

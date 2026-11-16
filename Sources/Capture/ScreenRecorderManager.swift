@@ -7,6 +7,13 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
     static let shared = ScreenRecorderManager()
     private override init() { super.init() }
 
+    private static let fileDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        return formatter
+    }()
+
     private var stream: SCStream?
     private var micSession: AVCaptureSession?
     private var assetWriter: AVAssetWriter?
@@ -17,8 +24,20 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
     private var pixelBufferAdaptor: AVAssetWriterInputPixelBufferAdaptor?
     private var outputURL: URL?
 
-    private(set) var isRecording = false
-    private(set) var isPaused = false
+    // Защита mutable-состояния при обращении из main thread и mediaQueue
+    private let stateLock = NSLock()
+    private var _isRecording = false
+    private var _isPaused = false
+
+    private(set) var isRecording: Bool {
+        get { stateLock.withLock { _isRecording } }
+        set { stateLock.withLock { _isRecording = newValue } }
+    }
+
+    private(set) var isPaused: Bool {
+        get { stateLock.withLock { _isPaused } }
+        set { stateLock.withLock { _isPaused = newValue } }
+    }
 
     private var sessionStarted = false
     private var pauseStartPTS: CMTime?
@@ -30,7 +49,7 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
     private var selectionWindow: RegionSelectionWindow?
     private var hudWindow: RecordingHUDWindow?
 
-    private let mediaQueue = DispatchQueue(label: "com.viktor.quicksnap2.videorecord")
+    private let mediaQueue = DispatchQueue(label: "com.viktor.quicksnap2.videorecord", qos: .userInitiated)
 
     var onRecordingStateChanged: ((Bool, Bool, String) -> Void)?
 
@@ -70,20 +89,33 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
 
     private func updateUIState() {
         let timeStr = currentFormattedTime()
-        hudWindow?.update(isPaused: isPaused, timeText: timeStr)
-        onRecordingStateChanged?(isRecording, isPaused, timeStr)
+        let rec = isRecording
+        let paused = isPaused
+        if Thread.isMainThread {
+            hudWindow?.update(isPaused: paused, timeText: timeStr)
+            onRecordingStateChanged?(rec, paused, timeStr)
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.hudWindow?.update(isPaused: paused, timeText: timeStr)
+                self?.onRecordingStateChanged?(rec, paused, timeStr)
+            }
+        }
     }
 
     // 1. Оверлей выбора области для записи
     private func beginRegionSelection() {
-        guard let screen = NSScreen.main else { return }
+        // Определяем экран под курсором мыши, а не просто первый/main
+        let mouseLocation = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first(where: { NSMouseInRect(mouseLocation, $0.frame, false) }) ?? NSScreen.main
+        guard let targetScreen = screen else { return }
+
         selectionWindow?.close()
 
-        let win = RegionSelectionWindow(screen: screen)
+        let win = RegionSelectionWindow(screen: targetScreen)
         win.onRegionSelected = { [weak self] rect in
             self?.selectionWindow = nil
             guard rect.width >= 32, rect.height >= 32 else { return }
-            self?.promptAudioAndStart(rect: rect, on: screen)
+            self?.promptAudioAndStart(rect: rect, on: targetScreen)
         }
         win.onCancelled = { [weak self] in
             self?.selectionWindow = nil
@@ -179,6 +211,7 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
                     micAllowed = await AVCaptureDevice.requestAccess(for: .audio)
                 } else {
                     await MainActor.run {
+                        NSApp.activate(ignoringOtherApps: true)
                         let a = NSAlert()
                         a.messageText = "Нет доступа к микрофону"
                         a.informativeText = "Разреши доступ для QuickSnap в Системных настройках → Конфиденциальность и безопасность → Микрофон."
@@ -221,9 +254,8 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
                 config.channelCount = 2
             }
 
-            let formatter = DateFormatter()
-            formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
-            let url = Config.saveDirectory.appendingPathComponent("QuickSnap_\(formatter.string(from: Date())).mp4")
+            Config.ensureInitialDirectorySetup()
+            let url = Config.saveDirectory.appendingPathComponent("QuickSnap_\(Self.fileDateFormatter.string(from: Date())).mp4")
             try? FileManager.default.removeItem(at: url)
             self.outputURL = url
 
@@ -285,7 +317,6 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
                     session.addInput(deviceInput)
                     session.addOutput(audioOut)
 
-                    // Считываем реальную частоту дискретизации и каналы микрофона, чтобы AVAssetWriter не падал
                     var sampleRate: Double = 48000
                     var channels: Int = 1
                     if let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(micDevice.activeFormat.formatDescription)?.pointee {
@@ -309,14 +340,16 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
                 }
             }
 
-            self.assetWriter = writer
-            self.videoInput = vInput
-            self.sysAudioInput = sInput
-            self.micAudioInput = mInput
-            self.pixelBufferAdaptor = adaptor
-            self.sessionStarted = false
-            self.pauseStartPTS = nil
-            self.totalPausedDuration = .zero
+            mediaQueue.sync {
+                self.assetWriter = writer
+                self.videoInput = vInput
+                self.sysAudioInput = sInput
+                self.micAudioInput = mInput
+                self.pixelBufferAdaptor = adaptor
+                self.sessionStarted = false
+                self.pauseStartPTS = nil
+                self.totalPausedDuration = .zero
+            }
 
             let hasMicInput = (mInput != nil)
             let (hud, hudWindowID) = await MainActor.run { () -> (RecordingHUDWindow, CGWindowID) in
@@ -361,17 +394,37 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
                 }
             }
         } catch {
+            // Корректно откатываем ресурсы при сбое на любом этапе запуска
+            self.micSession?.stopRunning(); self.micSession = nil
+            mediaQueue.async {
+                self.assetWriter?.cancelWriting()
+                self.assetWriter = nil
+                self.videoInput = nil
+                self.sysAudioInput = nil
+                self.micAudioInput = nil
+                self.pixelBufferAdaptor = nil
+                self.sessionStarted = false
+            }
+
             await MainActor.run {
                 self.isRecording = false
                 self.isPaused = false
                 self.hudWindow?.close()
                 self.hudWindow = nil
                 self.onRecordingStateChanged?(false, false, "")
+                NSApp.activate(ignoringOtherApps: true)
                 let a = NSAlert()
                 a.messageText = "Не удалось начать запись"
                 a.informativeText = error.localizedDescription
                 a.runModal()
             }
+        }
+    }
+
+    // Обработка внезапной остановки потока системой (например, отключение монитора)
+    func stream(_ stream: SCStream, didStopWithError error: Error) {
+        DispatchQueue.main.async { [weak self] in
+            self?.stopRecording()
         }
     }
 
@@ -427,7 +480,7 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
         }
     }
 
-    // 4b. Обработка звука микрофона с привязкой к общим часам HostTimeClock (как у SCStream)
+    // 4b. Обработка звука микрофона с привязкой к общим часам HostTimeClock
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard isRecording, !isPaused, sessionStarted, sampleBuffer.isValid,
               let writer = assetWriter, writer.status == .writing,
@@ -438,6 +491,7 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
         if let synced = retimeSampleBuffer(sampleBuffer, newPTS: targetPTS) {
             mInput.append(synced)
         }
+
         var hasVoice = false
         if let block = CMSampleBufferGetDataBuffer(sampleBuffer),
            let fmt = CMSampleBufferGetFormatDescription(sampleBuffer),
@@ -525,7 +579,6 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
         Task {
             try? await activeStream?.stopCapture()
 
-            // Финализируем AVAssetWriter строго на той же mediaQueue, где шли append()
             await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                 self.mediaQueue.async {
                     let writer = self.assetWriter

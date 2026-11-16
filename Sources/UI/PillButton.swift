@@ -1,6 +1,6 @@
 import Cocoa
 
-class PillButton: NSView {
+final class PillButton: NSView {
     private let bgView = NSView()
     private let actionBlock: () -> Void
     private var trackingArea: NSTrackingArea?
@@ -9,7 +9,11 @@ class PillButton: NSView {
     private let isDestructive: Bool
 
     var isSelected: Bool = false {
-        didSet { updateBackground() }
+        didSet {
+            if oldValue != isSelected {
+                updateBackground()
+            }
+        }
     }
 
     init(frame: NSRect, title: String?, symbolName: String?, isAccent: Bool = false, isDestructive: Bool = false, cornerRadius: CGFloat = 8, action: @escaping () -> Void) {
@@ -86,8 +90,9 @@ class PillButton: NSView {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let existing = trackingArea { removeTrackingArea(existing) }
-        trackingArea = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self, userInfo: nil)
-        addTrackingArea(trackingArea!)
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self, userInfo: nil)
+        trackingArea = area
+        addTrackingArea(area)
     }
 
     override func mouseEntered(with event: NSEvent) {

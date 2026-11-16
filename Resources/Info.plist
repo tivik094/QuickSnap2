@@ -10,15 +10,27 @@
 	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.viktor.quicksnap2</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
 	<key>CFBundleName</key>
 	<string>QuickSnap 2.0</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
 	<string>2.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.utilities</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
 	<key>LSUIElement</key>
 	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>QuickSnap 2.0 использует микрофон для записи голосовых комментариев при захвате видео с экрана.</string>
 	<key>NSScreenCaptureUsageDescription</key>
-	<string>QuickSnap 2.0 использует захват экрана для мгновенного создания скриншотов области и окон.</string>
+	<string>QuickSnap 2.0 использует захват экрана для мгновенного создания скриншотов области, окон и записи видео.</string>
 </dict>
 </plist>

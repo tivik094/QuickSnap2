@@ -1,9 +1,11 @@
 import Cocoa
+import ImageIO
 
 // MARK: - Popover в чистом стиле iScreen Shoter (сетка 3x2 + прокрутка недавних снимков)
-class MenuPopoverViewController: NSViewController {
+final class MenuPopoverViewController: NSViewController {
     var onClosePopover: (() -> Void)?
     private var recentURLs: [URL] = []
+    private var thumbnailButtons: [NSButton] = []
 
     override func loadView() {
         let width: CGFloat = 312
@@ -31,7 +33,7 @@ class MenuPopoverViewController: NSViewController {
         root.addSubview(settingsBtn)
 
         // 3 яркие круглые кнопки в ряд: Область, Окно, Видео
-        let colW: CGFloat = (width - 24) / 3 // 96.0 pt
+        let colW: CGFloat = (width - 24) / 3
         let actionsY: CGFloat = height - 122
 
         let areaAction = makeCircleAction(
@@ -108,7 +110,7 @@ class MenuPopoverViewController: NSViewController {
 
             let cols = 3
             let spacing: CGFloat = 8
-            let thumbW: CGFloat = (scrollWidth - spacing * CGFloat(cols - 1)) / CGFloat(cols) // 88.0 pt ровно
+            let thumbW: CGFloat = (scrollWidth - spacing * CGFloat(cols - 1)) / CGFloat(cols)
             let thumbH: CGFloat = 62
             let rows = Int(ceil(Double(recentURLs.count) / Double(cols)))
             let docHeight = max(scrollHeight, CGFloat(rows) * thumbH + CGFloat(max(0, rows - 1)) * spacing)
@@ -129,17 +131,18 @@ class MenuPopoverViewController: NSViewController {
                 thumbBtn.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.25).cgColor
                 thumbBtn.layer?.borderWidth = 1
                 thumbBtn.layer?.borderColor = NSColor.white.withAlphaComponent(0.14).cgColor
-                thumbBtn.image = NSImage(contentsOf: url)
                 thumbBtn.imageScaling = .scaleProportionallyUpOrDown
                 thumbBtn.toolTip = url.lastPathComponent
                 thumbBtn.tag = idx
                 thumbBtn.target = self
                 thumbBtn.action = #selector(openRecent(_:))
                 docView.addSubview(thumbBtn)
+                thumbnailButtons.append(thumbBtn)
             }
 
             scrollView.documentView = docView
             root.addSubview(scrollView)
+            loadThumbnailsAsync(maxPixelSize: Int(max(thumbW, thumbH) * 2))
         }
 
         // Нижняя компактная панель: папка слева и выход справа
@@ -168,6 +171,38 @@ class MenuPopoverViewController: NSViewController {
         root.addSubview(folderBtn)
         root.addSubview(quitBtn)
         self.view = root
+    }
+
+    // Асинхронный даунсемплинг миниатюр через ImageIO без декодирования 5K-скриншотов в RAM
+    private func loadThumbnailsAsync(maxPixelSize: Int) {
+        let urls = recentURLs
+        let buttons = thumbnailButtons
+        DispatchQueue.global(qos: .userInitiated).async {
+            for (idx, url) in urls.enumerated() where idx < buttons.count {
+                guard let thumb = Self.downsampledThumbnail(at: url, maxPixelSize: maxPixelSize) else { continue }
+                let btn = buttons[idx]
+                DispatchQueue.main.async {
+                    btn.image = thumb
+                }
+            }
+        }
+    }
+
+    private static func downsampledThumbnail(at url: URL, maxPixelSize: Int) -> NSImage? {
+        let sourceOptions: [CFString: Any] = [kCGImageSourceShouldCache: false]
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, sourceOptions as CFDictionary) else {
+            return nil
+        }
+        let thumbOptions: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
+        ]
+        guard let cgThumb = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbOptions as CFDictionary) else {
+            return nil
+        }
+        return NSImage(cgImage: cgThumb, size: NSSize(width: cgThumb.width, height: cgThumb.height))
     }
 
     private func makeCircleAction(frame: NSRect, icon: String, circleColor: NSColor, iconColor: NSColor, title: String, shortcut: String, action: @escaping () -> Void) -> NSView {
@@ -209,7 +244,7 @@ class MenuPopoverViewController: NSViewController {
     }
 
     @objc private func openRecent(_ sender: NSButton) {
-        guard sender.tag < recentURLs.count else { return }
+        guard sender.tag >= 0, sender.tag < recentURLs.count else { return }
         let url = recentURLs[sender.tag]
         onClosePopover?()
         ScreenshotWatcher.shared.openEditor(for: url)
@@ -220,7 +255,7 @@ private final class FlippedContainerView: NSView {
     override var isFlipped: Bool { true }
 }
 
-private class HoverCircleContainer: NSView {
+private final class HoverCircleContainer: NSView {
     weak var circleView: NSView?
     private let actionBlock: () -> Void
     private var trackingArea: NSTrackingArea?
@@ -235,8 +270,9 @@ private class HoverCircleContainer: NSView {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let existing = trackingArea { removeTrackingArea(existing) }
-        trackingArea = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self, userInfo: nil)
-        addTrackingArea(trackingArea!)
+        let area = NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self, userInfo: nil)
+        trackingArea = area
+        addTrackingArea(area)
     }
 
     override func mouseEntered(with event: NSEvent) {
