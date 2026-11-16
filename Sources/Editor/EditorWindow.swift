@@ -167,6 +167,7 @@ final class EditorCanvasView: NSView {
             targetPixelsH = Int(bounds.height * scale)
         }
 
+        let targetColorSpace = window?.screen?.colorSpace ?? NSScreen.main?.colorSpace ?? .displayP3
         guard targetPixelsW > 0, targetPixelsH > 0,
               let rep = NSBitmapImageRep(
                 bitmapDataPlanes: nil,
@@ -176,10 +177,10 @@ final class EditorCanvasView: NSView {
                 samplesPerPixel: 4,
                 hasAlpha: true,
                 isPlanar: false,
-                colorSpaceName: .deviceRGB,
+                colorSpaceName: .calibratedRGB,
                 bytesPerRow: 0,
                 bitsPerPixel: 0
-              ) else {
+              )?.retagging(with: targetColorSpace) else {
             return nil
         }
         rep.size = bounds.size
