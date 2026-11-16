@@ -1,9 +1,24 @@
+# macOS
 .DS_Store
-build/
+.AppleDouble
+.LSOverride
+._*
+
+# Swift / Сборка и бандлы
+*.app/
 *.dmg
-*.app
-.idea/workspace.xml
-.idea/tasks.xml
-.idea/usage.statistics.xml
-.idea/shelf/
+*.dSYM.zip
+*.dSYM
+.build/
+Packages/
+DerivedData/
+
+# IDE и редакторы
 .idea/
+.vscode/
+*.swp
+*~
+
+# Временные файлы и логи
+*.log
+.env
