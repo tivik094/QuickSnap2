@@ -193,7 +193,11 @@ final class MenuPopoverViewController: NSViewController {
                 let thumbBtn = ThumbnailTileButton(
                     frame: NSRect(x: tx, y: ty, width: thumbW, height: thumbH),
                     tokens: tokens,
-                    url: url
+                    url: url,
+                    onDelete: { [weak self] in
+                        self?.thumbnailCache.removeValue(forKey: url)
+                        self?.rebuildUI()
+                    }
                 ) { [weak self] in
                     self?.onClosePopover?()
                     ScreenshotWatcher.shared.openEditor(for: url)
@@ -265,6 +269,9 @@ final class MenuPopoverViewController: NSViewController {
 
     private func loadThumbnailsAsync(maxPixelSize: Int) {
         let urls = recentURLs
+        let validSet = Set(urls)
+        thumbnailCache = thumbnailCache.filter { validSet.contains($0.key) }
+
         let buttons = thumbnailButtons
         let existingCache = thumbnailCache
 
@@ -280,6 +287,7 @@ final class MenuPopoverViewController: NSViewController {
                 guard let thumb = Self.downsampledThumbnail(at: url, maxPixelSize: maxPixelSize) else { continue }
                 let btn = buttons[idx]
                 DispatchQueue.main.async {
+                    guard btn.superview != nil else { return }
                     self?.thumbnailCache[url] = thumb
                     btn.image = thumb
                 }
@@ -381,6 +389,7 @@ final class MenuPopoverViewController: NSViewController {
 
 private final class ThumbnailTileButton: NSButton {
     private let tokens: ThemeTokens
+    private let onDelete: () -> Void
     private let onClick: () -> Void
     private let url: URL
     private let imageLayer = CALayer()
@@ -396,9 +405,10 @@ private final class ThumbnailTileButton: NSButton {
         }
     }
 
-    init(frame: NSRect, tokens: ThemeTokens, url: URL, onClick: @escaping () -> Void) {
+    init(frame: NSRect, tokens: ThemeTokens, url: URL, onDelete: @escaping () -> Void, onClick: @escaping () -> Void) {
         self.tokens = tokens
         self.url = url
+        self.onDelete = onDelete
         self.onClick = onClick
         super.init(frame: frame)
 
@@ -463,13 +473,13 @@ private final class ThumbnailTileButton: NSButton {
         guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
               let cgImage = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return }
         let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
-        let pin = PinnedScreenshotWindow(image: image)
-        pin.makeKeyAndOrderFront(nil)
+        PinnedScreenshotManager.shared.pin(image: image)
     }
 
     @objc private func deleteScreenshot() {
         try? FileManager.default.removeItem(at: url)
         NSSound(named: "Funk")?.play()
+        onDelete()
     }
 }
 

@@ -1,4 +1,7 @@
 #!/bin/bash
+
+cd "$(dirname "$0")/.."
+
 set -e
 
 STAGING="/tmp/QuickSnap_DMG_Staging"

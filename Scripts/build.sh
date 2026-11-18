@@ -1,9 +1,14 @@
 #!/bin/bash
+
+cd "$(dirname "$0")/.."
+
+./Scripts/test.sh
+
 set -e
 
 APP_NAME="QuickSnap 2.2.app"
 APP_PATH="/Applications/$APP_NAME"
-PROJ_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJ_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "🛑 Останавливаем старый процесс..."
 killall -9 QuickSnap2 2>/dev/null || true

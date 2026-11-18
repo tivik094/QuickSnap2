@@ -22,3 +22,17 @@ DerivedData/
 # Временные файлы и логи
 *.log
 .env
+
+# Build & Tests
+.build/
+dist/
+
+# Backups & macOS
+*.bak
+.DS_Store
+
+# JetBrains / AppCode / Cursor
+.idea/workspace.xml
+.idea/tasks.xml
+.idea/usage.statistics.xml
+.idea/shelf/

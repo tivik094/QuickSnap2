@@ -77,6 +77,15 @@ final class PillButton: NSView {
 
     required init?(coder: NSCoder) { fatalError() }
 
+    func setSymbol(_ symbolName: String, tintColor: NSColor? = nil) {
+        guard let iv = subviews.compactMap({ $0 as? NSImageView }).first,
+              let sym = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil) else { return }
+        iv.image = sym.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
+        if let tint = tintColor {
+            iv.contentTintColor = tint
+        }
+    }
+
     private func updateBackground() {
         if isAccent || isSelected {
             let accent = Config.tokens.settingsAccent

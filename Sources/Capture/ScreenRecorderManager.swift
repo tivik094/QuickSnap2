@@ -27,7 +27,11 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
     // Защита mutable-состояния при обращении из main thread и mediaQueue
     private let stateLock = NSLock()
     private var _isRecording = false
+    private var _isStarting = false
     private var _isPaused = false
+    private var _isMicMuted = false
+    private var _pauseStartHostTime: CMTime?
+    private var _totalPausedDuration: CMTime = .zero
 
     private(set) var isRecording: Bool {
         get { stateLock.withLock { _isRecording } }
@@ -39,15 +43,19 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
         set { stateLock.withLock { _isPaused = newValue } }
     }
 
+    private(set) var isMicMuted: Bool {
+        get { stateLock.withLock { _isMicMuted } }
+        set { stateLock.withLock { _isMicMuted = newValue } }
+    }
+
     private var sessionStarted = false
-    private var pauseStartPTS: CMTime?
-    private var totalPausedDuration: CMTime = .zero
     private var accumulatedSeconds: TimeInterval = 0
     private var segmentStartDate: Date?
 
     private var timer: Timer?
     private var selectionWindow: RegionSelectionWindow?
     private var hudWindow: RecordingHUDWindow?
+    private var borderWindow: RecordingBorderWindow?
 
     private let mediaQueue = DispatchQueue(label: "com.viktor.quicksnap2.videorecord", qos: .userInitiated)
 
@@ -63,28 +71,56 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
 
     func togglePause() {
         guard isRecording else { return }
-        if isPaused {
-            isPaused = false
-            segmentStartDate = Date()
-            NSSound(named: "Tink")?.play()
-        } else {
-            isPaused = true
-            if let start = segmentStartDate {
-                accumulatedSeconds += Date().timeIntervalSince(start)
-                segmentStartDate = nil
+        let now = CMClockGetTime(CMClockGetHostTimeClock())
+        let pausedNow: Bool = stateLock.withLock {
+            if _isPaused {
+                _isPaused = false
+                if let pauseStart = _pauseStartHostTime {
+                    let delta = CMTimeSubtract(now, pauseStart)
+                    if CMTimeCompare(delta, .zero) > 0 {
+                        _totalPausedDuration = CMTimeAdd(_totalPausedDuration, delta)
+                    }
+                    _pauseStartHostTime = nil
+                }
+                segmentStartDate = Date()
+                return false
+            } else {
+                _isPaused = true
+                _pauseStartHostTime = now
+                if let start = segmentStartDate {
+                    accumulatedSeconds += Date().timeIntervalSince(start)
+                    segmentStartDate = nil
+                }
+                return true
             }
-            NSSound(named: "Pop")?.play()
         }
+        NSSound(named: pausedNow ? "Pop" : "Tink")?.play()
         updateUIState()
     }
 
-    private func currentFormattedTime() -> String {
-        var total = accumulatedSeconds
-        if !isPaused, let start = segmentStartDate {
-            total += Date().timeIntervalSince(start)
+    func toggleMicMute() {
+        guard isRecording, micSession != nil else { return }
+        let newMuted = !isMicMuted
+        isMicMuted = newMuted
+        NSSound(named: newMuted ? "Pop" : "Tink")?.play()
+        if Thread.isMainThread {
+            hudWindow?.setMicMuted(newMuted)
+        } else {
+            DispatchQueue.main.async { [weak self] in
+                self?.hudWindow?.setMicMuted(newMuted)
+            }
         }
-        let sec = Int(total)
-        return String(format: "%02d:%02d", sec / 60, sec % 60)
+    }
+
+    private func currentFormattedTime() -> String {
+        let total: TimeInterval = stateLock.withLock {
+            var t = accumulatedSeconds
+            if !_isPaused, let start = segmentStartDate {
+                t += Date().timeIntervalSince(start)
+            }
+            return t
+        }
+        return VideoCaptureMath.formatDuration(total)
     }
 
     private func updateUIState() {
@@ -93,10 +129,12 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
         let paused = isPaused
         if Thread.isMainThread {
             hudWindow?.update(isPaused: paused, timeText: timeStr)
+            borderWindow?.setPaused(paused)
             onRecordingStateChanged?(rec, paused, timeStr)
         } else {
             DispatchQueue.main.async { [weak self] in
                 self?.hudWindow?.update(isPaused: paused, timeText: timeStr)
+                self?.borderWindow?.setPaused(paused)
                 self?.onRecordingStateChanged?(rec, paused, timeStr)
             }
         }
@@ -201,6 +239,13 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
         captureSystemAudio: Bool,
         captureMic: Bool
     ) async {
+        let canStart = stateLock.withLock { () -> Bool in
+            guard !_isRecording && !_isStarting else { return false }
+            _isStarting = true
+            return true
+        }
+        guard canStart else { return }
+
         do {
             var micAllowed = false
             if captureMic {
@@ -225,17 +270,8 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
             let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
             guard let display = content.displays.first(where: { $0.displayID == displayID }) ?? content.displays.first else { return }
 
-            let pixelW = (Int(rect.width * scale) / 2) * 2
-            let pixelH = (Int(rect.height * scale) / 2) * 2
-            guard pixelW >= 32, pixelH >= 32 else { return }
-
-            let flippedY = screenFrame.height - (rect.origin.y - screenFrame.origin.y) - rect.height
-            let sourceRect = CGRect(
-                x: rect.origin.x - screenFrame.origin.x,
-                y: flippedY,
-                width: rect.width,
-                height: rect.height
-            )
+            guard let (pixelW, pixelH) = VideoCaptureMath.evenPixelSize(for: rect, scale: scale) else { return }
+            let sourceRect = VideoCaptureMath.makeSourceRect(selection: rect, screenFrame: screenFrame)
 
             let fps = Config.videoFPS
             let config = SCStreamConfiguration()
@@ -255,13 +291,14 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
             }
 
             Config.ensureInitialDirectorySetup()
-            let url = Config.saveDirectory.appendingPathComponent("QuickSnap_\(Self.fileDateFormatter.string(from: Date())).mp4")
+            let existing = (try? FileManager.default.contentsOfDirectory(atPath: Config.saveDirectory.path)) ?? []
+            let filename = VideoCaptureMath.makeOutputFilename(existingNames: Set(existing))
+            let url = Config.saveDirectory.appendingPathComponent(filename)
             try? FileManager.default.removeItem(at: url)
             self.outputURL = url
 
             let writer = try AVAssetWriter(outputURL: url, fileType: .mp4)
-            let fpsFactor = (fps == 30) ? 9 : 15
-            let targetBitrate = max(fps == 30 ? 7_000_000 : 12_000_000, pixelW * pixelH * fpsFactor)
+            let targetBitrate = VideoCaptureMath.targetBitrate(pixelWidth: pixelW, pixelHeight: pixelH, fps: fps)
             let videoSettings: [String: Any] = [
                 AVVideoCodecKey: AVVideoCodecType.hevc,
                 AVVideoWidthKey: pixelW,
@@ -347,21 +384,28 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
                 self.micAudioInput = mInput
                 self.pixelBufferAdaptor = adaptor
                 self.sessionStarted = false
-                self.pauseStartPTS = nil
-                self.totalPausedDuration = .zero
+            }
+            self.stateLock.withLock {
+                self._pauseStartHostTime = nil
+                self._totalPausedDuration = .zero
             }
 
+            self.isMicMuted = false
             let hasMicInput = (mInput != nil)
-            let (hud, hudWindowID) = await MainActor.run { () -> (RecordingHUDWindow, CGWindowID) in
+            let (hud, border, excludedIDs) = await MainActor.run { () -> (RecordingHUDWindow, RecordingBorderWindow, Set<CGWindowID>) in
                 let w = RecordingHUDWindow(visibleFrame: visibleFrame)
                 w.configureMic(enabled: hasMicInput)
+                w.onMicToggle = { [weak self] in self?.toggleMicMute() }
                 w.onPauseToggle = { [weak self] in self?.togglePause() }
                 w.onStop = { [weak self] in self?.stopRecording() }
                 self.activeHUD = w
-                return (w, CGWindowID(w.windowNumber))
+
+                let b = RecordingBorderWindow(captureRect: rect)
+                let ids: Set<CGWindowID> = [CGWindowID(w.windowNumber), CGWindowID(b.windowNumber)]
+                return (w, b, ids)
             }
 
-            let excludedWindows: [SCWindow] = content.windows.filter { $0.windowID == hudWindowID }
+            let excludedWindows: [SCWindow] = content.windows.filter { excludedIDs.contains($0.windowID) }
             let filter = SCContentFilter(display: display, excludingWindows: excludedWindows)
 
             let stream = SCStream(filter: filter, configuration: config, delegate: self)
@@ -369,21 +413,23 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
             if captureSystemAudio {
                 try stream.addStreamOutput(self, type: .audio, sampleHandlerQueue: mediaQueue)
             }
-            try await stream.startCapture()
-
-            if let session = captureSession {
-                self.micSession = session
-                session.startRunning()
+            self.stream = stream
+            self.micSession = captureSession
+            stateLock.withLock {
+                self._isRecording = true
+                self._isStarting = false
+                self._isPaused = false
+                self.accumulatedSeconds = 0
+                self.segmentStartDate = Date()
             }
 
-            self.stream = stream
-            self.isRecording = true
-            self.isPaused = false
-            self.accumulatedSeconds = 0
-            self.segmentStartDate = Date()
+            try await stream.startCapture()
+            captureSession?.startRunning()
 
             await MainActor.run {
                 self.hudWindow = hud
+                self.borderWindow = border
+                border.orderFrontRegardless()
                 hud.makeKeyAndOrderFront(nil)
                 NSSound(named: "Tink")?.play()
                 self.updateUIState()
@@ -406,11 +452,17 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
                 self.sessionStarted = false
             }
 
+            stateLock.withLock {
+                self._isRecording = false
+                self._isStarting = false
+                self._isPaused = false
+            }
+
             await MainActor.run {
-                self.isRecording = false
-                self.isPaused = false
                 self.hudWindow?.close()
                 self.hudWindow = nil
+                self.borderWindow?.close()
+                self.borderWindow = nil
                 self.onRecordingStateChanged?(false, false, "")
                 NSApp.activate(ignoringOtherApps: true)
                 let a = NSAlert()
@@ -438,25 +490,16 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
                   let status = SCFrameStatus(rawValue: statusRaw),
                   status == .complete else { return }
 
+            guard !isPaused else { return }
             let rawPTS = CMSampleBufferGetPresentationTimeStamp(sampleBuffer)
-
-            if isPaused {
-                if pauseStartPTS == nil { pauseStartPTS = rawPTS }
-                return
-            } else if let pauseStart = pauseStartPTS {
-                let delta = CMTimeSubtract(rawPTS, pauseStart)
-                if CMTimeCompare(delta, .zero) > 0 {
-                    totalPausedDuration = CMTimeAdd(totalPausedDuration, delta)
-                }
-                pauseStartPTS = nil
-            }
 
             guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer),
                   let writer = assetWriter,
                   let input = videoInput,
                   let adaptor = pixelBufferAdaptor else { return }
 
-            let adjustedPTS = CMTimeSubtract(rawPTS, totalPausedDuration)
+            let pausedOffset = stateLock.withLock { _totalPausedDuration }
+            let adjustedPTS = CMTimeSubtract(rawPTS, pausedOffset)
 
             if !sessionStarted && writer.status == .unknown {
                 writer.startWriting()
@@ -472,9 +515,10 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
                   let writer = assetWriter, writer.status == .writing,
                   let sInput = sysAudioInput, sInput.isReadyForMoreMediaData else { return }
 
-            if CMTimeCompare(totalPausedDuration, .zero) == 0 {
+            let pausedOffset = stateLock.withLock { _totalPausedDuration }
+            if CMTimeCompare(pausedOffset, .zero) == 0 {
                 sInput.append(sampleBuffer)
-            } else if let shifted = shiftSampleBufferPTS(sampleBuffer, by: totalPausedDuration) {
+            } else if let shifted = shiftSampleBufferPTS(sampleBuffer, by: pausedOffset) {
                 sInput.append(shifted)
             }
         }
@@ -486,11 +530,22 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
               let writer = assetWriter, writer.status == .writing,
               let mInput = micAudioInput, mInput.isReadyForMoreMediaData else { return }
 
+        let (muted, pausedOffset) = stateLock.withLock { (_isMicMuted, _totalPausedDuration) }
         let hostNow = CMClockGetTime(CMClockGetHostTimeClock())
-        let targetPTS = CMTimeSubtract(hostNow, totalPausedDuration)
+        let targetPTS = CMTimeSubtract(hostNow, pausedOffset)
         if let synced = retimeSampleBuffer(sampleBuffer, newPTS: targetPTS) {
-            mInput.append(synced)
+            if muted, let block = CMSampleBufferGetDataBuffer(synced) {
+                let totalLen = CMBlockBufferGetDataLength(block)
+                if totalLen > 0 {
+                    CMBlockBufferFillDataBytes(with: 0, blockBuffer: block, offsetIntoDestination: 0, dataLength: totalLen)
+                }
+            }
+            if writer.status == .writing && mInput.isReadyForMoreMediaData {
+                mInput.append(synced)
+            }
         }
+
+        if muted { return }
 
         var hasVoice = false
         if let block = CMSampleBufferGetDataBuffer(sampleBuffer),
@@ -567,6 +622,8 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
 
         hudWindow?.orderOut(nil)
         hudWindow = nil
+        borderWindow?.orderOut(nil)
+        borderWindow = nil
 
         let activeStream = stream
         let activeMic = micSession
@@ -618,227 +675,5 @@ final class ScreenRecorderManager: NSObject, SCStreamOutput, SCStreamDelegate, A
                 }
             }
         }
-    }
-}
-
-// MARK: - Плавающая панель управления записью (Таймер + Пауза + Стоп)
-private final class RecordingHUDWindow: NSPanel {
-    var onPauseToggle: (() -> Void)?
-    var onStop: (() -> Void)?
-
-    private let dotView = NSView()
-    private let timeLabel = NSTextField(labelWithString: "00:00")
-    private let micIconView = NSImageView()
-    private var pauseBtn: PillButton!
-    private var stopBtn: PillButton!
-    private var micEnabled = false
-    private var lastMicPulse: CFTimeInterval = 0
-
-    func configureMic(enabled: Bool) {
-        self.micEnabled = enabled
-        let sym = enabled ? "mic.fill" : "mic.slash.fill"
-        micIconView.image = NSImage(systemSymbolName: sym, accessibilityDescription: "Mic")
-        micIconView.contentTintColor = enabled ? NSColor.white.withAlphaComponent(0.6) : NSColor.systemGray.withAlphaComponent(0.45)
-        micIconView.toolTip = enabled ? "Микрофон включён (зелёный при наличии звука)" : "Микрофон выключен или нет доступа"
-    }
-
-    func notifyMicSignal(active: Bool) {
-        guard micEnabled else { return }
-        let now = CACurrentMediaTime()
-        if active {
-            lastMicPulse = now
-            micIconView.contentTintColor = NSColor.systemGreen
-        } else if now - lastMicPulse > 0.35 {
-            micIconView.contentTintColor = NSColor.white.withAlphaComponent(0.6)
-        }
-    }
-
-    init(visibleFrame: CGRect) {
-        let width: CGFloat = 238
-        let height: CGFloat = 46
-        let x = visibleFrame.midX - width / 2
-        let y = visibleFrame.minY + 24
-
-        super.init(
-            contentRect: NSRect(x: x, y: y, width: width, height: height),
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false
-        )
-        self.level = .floating
-        self.isOpaque = false
-        self.backgroundColor = .clear
-        self.hasShadow = true
-        self.isMovableByWindowBackground = true
-        self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-
-        let root = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: width, height: height))
-        root.material = .hudWindow
-        root.blendingMode = .behindWindow
-        root.state = .active
-        root.wantsLayer = true
-        root.layer?.cornerRadius = height / 2
-        root.layer?.masksToBounds = true
-        root.layer?.borderWidth = 1.0
-        root.layer?.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
-
-        dotView.frame = NSRect(x: 16, y: (height - 10) / 2, width: 10, height: 10)
-        dotView.wantsLayer = true
-        dotView.layer?.cornerRadius = 5
-        dotView.layer?.backgroundColor = NSColor.systemRed.cgColor
-        root.addSubview(dotView)
-
-        timeLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
-        timeLabel.textColor = .white
-        timeLabel.frame = NSRect(x: 32, y: (height - 18) / 2, width: 52, height: 18)
-        root.addSubview(timeLabel)
-
-        micIconView.frame = NSRect(x: 88, y: (height - 16) / 2, width: 16, height: 16)
-        micIconView.imageScaling = .scaleProportionallyDown
-        root.addSubview(micIconView)
-        configureMic(enabled: false)
-
-        pauseBtn = PillButton(
-            frame: NSRect(x: 112, y: 8, width: 34, height: 30),
-            title: nil,
-            symbolName: "pause.fill",
-            cornerRadius: 15
-        ) { [weak self] in
-            self?.onPauseToggle?()
-        }
-        pauseBtn.toolTip = "Пауза / Продолжить"
-        root.addSubview(pauseBtn)
-
-        stopBtn = PillButton(
-            frame: NSRect(x: 152, y: 8, width: 74, height: 30),
-            title: "Стоп",
-            symbolName: "stop.fill",
-            isDestructive: true,
-            cornerRadius: 15
-        ) { [weak self] in
-            self?.onStop?()
-        }
-        stopBtn.toolTip = "Остановить и сохранить MP4"
-        root.addSubview(stopBtn)
-
-        self.contentView = root
-    }
-
-    func update(isPaused: Bool, timeText: String) {
-        timeLabel.stringValue = isPaused ? "ПАУЗА" : timeText
-        dotView.layer?.backgroundColor = (isPaused ? NSColor.systemYellow : NSColor.systemRed).cgColor
-
-        if let iv = pauseBtn.subviews.compactMap({ $0 as? NSImageView }).first,
-           let sym = NSImage(systemSymbolName: isPaused ? "play.fill" : "pause.fill", accessibilityDescription: nil) {
-            iv.image = sym.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold))
-        }
-    }
-}
-
-// MARK: - Полноэкранный оверлей выбора области
-private final class RegionSelectionWindow: NSWindow {
-    var onRegionSelected: ((CGRect) -> Void)?
-    var onCancelled: (() -> Void)?
-
-    init(screen: NSScreen) {
-        super.init(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
-        self.level = .screenSaver
-        self.isOpaque = false
-        self.backgroundColor = .clear
-        self.ignoresMouseEvents = false
-        self.acceptsMouseMovedEvents = true
-        self.hasShadow = false
-
-        let view = SelectionCanvasView(frame: NSRect(origin: .zero, size: screen.frame.size))
-        view.onComplete = { [weak self] localRect in
-            guard let self = self else { return }
-            let screenRect = CGRect(
-                x: screen.frame.origin.x + localRect.origin.x,
-                y: screen.frame.origin.y + localRect.origin.y,
-                width: localRect.width,
-                height: localRect.height
-            )
-            self.orderOut(nil)
-            self.onRegionSelected?(screenRect)
-        }
-        view.onCancel = { [weak self] in
-            self?.orderOut(nil)
-            self?.onCancelled?()
-        }
-        self.contentView = view
-    }
-
-    override var canBecomeKey: Bool { true }
-}
-
-private final class SelectionCanvasView: NSView {
-    var onComplete: ((CGRect) -> Void)?
-    var onCancel: (() -> Void)?
-    private var startPoint: NSPoint?
-    private var currentPoint: NSPoint?
-
-    override func resetCursorRects() {
-        addCursorRect(bounds, cursor: .crosshair)
-    }
-
-    override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 { // Esc
-            onCancel?()
-        }
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        startPoint = convert(event.locationInWindow, from: nil)
-        currentPoint = startPoint
-        needsDisplay = true
-    }
-
-    override func mouseDragged(with event: NSEvent) {
-        currentPoint = convert(event.locationInWindow, from: nil)
-        needsDisplay = true
-    }
-
-    override func mouseUp(with event: NSEvent) {
-        guard let p1 = startPoint, let p2 = currentPoint else { return }
-        let rect = NSRect(
-            x: min(p1.x, p2.x),
-            y: min(p1.y, p2.y),
-            width: abs(p2.x - p1.x),
-            height: abs(p2.y - p1.y)
-        )
-        onComplete?(rect)
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        NSColor.black.withAlphaComponent(0.32).setFill()
-        bounds.fill()
-
-        guard let p1 = startPoint, let p2 = currentPoint else { return }
-        let rect = NSRect(
-            x: min(p1.x, p2.x),
-            y: min(p1.y, p2.y),
-            width: abs(p2.x - p1.x),
-            height: abs(p2.y - p1.y)
-        )
-
-        NSGraphicsContext.current?.compositingOperation = .clear
-        rect.fill()
-        NSGraphicsContext.current?.compositingOperation = .sourceOver
-
-        NSColor.systemGreen.setStroke()
-        let border = NSBezierPath(rect: rect)
-        border.lineWidth = 2.0
-        border.stroke()
-
-        let badgeText = "\(Int(rect.width)) × \(Int(rect.height))"
-        let attrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .semibold),
-            .foregroundColor: NSColor.white
-        ]
-        let size = badgeText.size(withAttributes: attrs)
-        let badgeRect = NSRect(x: rect.minX, y: max(8, rect.minY - size.height - 10), width: size.width + 14, height: size.height + 6)
-        NSColor.black.withAlphaComponent(0.78).setFill()
-        NSBezierPath(roundedRect: badgeRect, xRadius: 6, yRadius: 6).fill()
-        badgeText.draw(at: NSPoint(x: badgeRect.minX + 7, y: badgeRect.minY + 3), withAttributes: attrs)
     }
 }

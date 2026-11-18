@@ -44,6 +44,7 @@ final class PreviewPanel: NSPanel {
         )
 
         self.level = .floating
+        self.isReleasedWhenClosed = false
         self.isOpaque = false
         self.backgroundColor = .clear
         self.hasShadow = false

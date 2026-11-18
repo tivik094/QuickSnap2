@@ -27,6 +27,7 @@ private struct CanvasSnapshot {
 final class EditorCanvasView: NSView {
     private static let sharedCIContext = CIContext(options: [.useSoftwareRenderer: false])
     private static let annotationCornerRadius: CGFloat = 6.0
+    private static let maxUndoSnapshots = 5
 
     private(set) var baseImage: NSImage
     var currentTool: AnnotationTool = .arrow
@@ -162,6 +163,7 @@ final class EditorCanvasView: NSView {
 
         guard let croppedCG = fullCG.cropping(to: cropPx), croppedCG.width > 0, croppedCG.height > 0 else { return }
 
+        if undoStack.count >= Self.maxUndoSnapshots { undoStack.removeFirst() }
         undoStack.append(CanvasSnapshot(image: baseImage, annotations: annotations, canvasSize: bounds.size))
 
         let croppedRep = NSBitmapImageRep(cgImage: croppedCG)
@@ -306,13 +308,15 @@ final class EditorCanvasView: NSView {
         }
         rep.size = bounds.size
 
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+        guard let ctx = NSGraphicsContext(bitmapImageRep: rep) else { return nil }
+        let previousContext = NSGraphicsContext.current
+        NSGraphicsContext.current = ctx
+        defer { NSGraphicsContext.current = previousContext }
+
         baseImage.draw(in: bounds)
         for item in annotations {
             drawAnnotation(item)
         }
-        NSGraphicsContext.restoreGraphicsState()
 
         let result = NSImage(size: bounds.size)
         result.addRepresentation(rep)
@@ -391,7 +395,7 @@ final class EditorWindow: NSWindow {
         let canvasW = origW * ratio
         let canvasH = origH * ratio
 
-        let winW = max(canvasW + sidePad * 2, 480)
+        let winW = max(canvasW + sidePad * 2, 540)
         let winH = max(canvasH + reservedV, 240)
         let winSize = NSSize(width: winW, height: winH)
         let winOrigin = NSPoint(
@@ -452,7 +456,7 @@ final class EditorWindow: NSWindow {
 
     private func resizeForCanvas(_ newCanvasSize: NSSize) {
         let reservedV = dockH + dockBottomMargin + topHeaderH + 22
-        let winW = max(newCanvasSize.width + sidePad * 2, 480)
+        let winW = max(newCanvasSize.width + sidePad * 2, 540)
         let winH = max(newCanvasSize.height + reservedV, 220)
         let oldFrame = self.frame
         let newOrigin = NSPoint(
@@ -781,26 +785,20 @@ final class EditorWindow: NSWindow {
     }
 
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 53 { // Esc
-            self.close()
-        } else if event.keyCode == 36 { // Enter
-            saveAndCopy()
-        } else if event.modifierFlags.contains(.command) && event.charactersIgnoringModifiers == "z" {
-            canvas.undo()
-        } else if event.modifierFlags.contains(.command) && event.charactersIgnoringModifiers == "c" {
-            saveAndCopy()
-        } else if event.modifierFlags.contains(.command) && event.charactersIgnoringModifiers == "t" {
-            recognizeTextToClipboard()
-        } else if let chars = event.charactersIgnoringModifiers {
-            switch chars {
-            case "1": updateToolSelection(.arrow)
-            case "2": updateToolSelection(.rectangle)
-            case "3": updateToolSelection(.blur)
-            case "4": updateToolSelection(.crop)
-            default: super.keyDown(with: event)
-            }
-        } else {
-            super.keyDown(with: event)
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let isCmd = flags == .command
+
+        switch event.keyCode {
+        case 53: close() // Esc
+        case 36, 76: saveAndCopy() // Return / NumPad Enter
+        case 6 where isCmd: canvas.undo() // Cmd + Z (Я)
+        case 8 where isCmd: saveAndCopy() // Cmd + C (С)
+        case 17 where isCmd: recognizeTextToClipboard() // Cmd + T (Е)
+        case 18 where flags.isEmpty: updateToolSelection(.arrow) // 1
+        case 19 where flags.isEmpty: updateToolSelection(.rectangle) // 2
+        case 20 where flags.isEmpty: updateToolSelection(.blur) // 3
+        case 21 where flags.isEmpty: updateToolSelection(.crop) // 4
+        default: super.keyDown(with: event)
         }
     }
 }

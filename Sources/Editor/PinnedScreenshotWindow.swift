@@ -16,7 +16,11 @@ final class PinnedScreenshotManager {
         }
         windows.append(win)
         win.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        if #available(macOS 14.0, *) {
+            NSApp.activate()
+        } else {
+            NSApp.activate(ignoringOtherApps: true)
+        }
         NSSound(named: "Tink")?.play()
     }
 
@@ -27,7 +31,7 @@ final class PinnedScreenshotManager {
     }
 }
 
-final class PinnedScreenshotWindow: NSWindow {
+final class PinnedScreenshotWindow: NSWindow, NSMenuDelegate {
     static var allOpen: [PinnedScreenshotWindow] { PinnedScreenshotManager.shared.windows }
     static func closeAll() { PinnedScreenshotManager.shared.closeAll() }
 
@@ -35,13 +39,16 @@ final class PinnedScreenshotWindow: NSWindow {
 
     private let baseSize: NSSize
     private var currentScale: CGFloat = 1.0
+    private var hintDismissWorkItem: DispatchWorkItem?
     private let imageView = NSImageView()
     private let closeButton = NSButton()
     private let copyButton = NSButton()
     private let hintPill = NSView()
 
     init(image: NSImage) {
-        let screenFrame = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        let mouseLocation = NSEvent.mouseLocation
+        let activeScreen = NSScreen.screens.first(where: { $0.frame.contains(mouseLocation) }) ?? NSScreen.main
+        let screenFrame = activeScreen?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         var initialSize = image.size
         if initialSize.width <= 0 || initialSize.height <= 0 {
             initialSize = NSSize(width: 320, height: 240)
@@ -67,6 +74,7 @@ final class PinnedScreenshotWindow: NSWindow {
         )
 
         self.level = .floating
+        self.isReleasedWhenClosed = false
         self.isOpaque = false
         self.backgroundColor = .clear
         self.hasShadow = true
@@ -93,7 +101,9 @@ final class PinnedScreenshotWindow: NSWindow {
                 self?.copyButton.animator().alphaValue = hovered ? 1.0 : 0.0
             }
         }
-        container.menu = buildContextMenu()
+        let contextMenu = buildContextMenu()
+        contextMenu.delegate = self
+        container.menu = contextMenu
 
         imageView.frame = container.bounds
         imageView.autoresizingMask = [.width, .height]
@@ -139,14 +149,16 @@ final class PinnedScreenshotWindow: NSWindow {
             hintPill.addSubview(hintLabel)
             container.addSubview(hintPill)
 
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) { [weak self] in
+            let workItem = DispatchWorkItem { [weak self] in
                 NSAnimationContext.runAnimationGroup({ ctx in
                     ctx.duration = 0.35
                     self?.hintPill.animator().alphaValue = 0.0
-                }, completionHandler: {
+                }, completionHandler: { [weak self] in
                     self?.hintPill.removeFromSuperview()
                 })
             }
+            self.hintDismissWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.2, execute: workItem)
         }
 
         self.contentView = container
@@ -186,15 +198,26 @@ final class PinnedScreenshotWindow: NSWindow {
         let closeItem = NSMenuItem(title: "Закрыть стикер", action: #selector(closePin), keyEquivalent: "")
         closeItem.target = self
         menu.addItem(closeItem)
+
+        let closeAllItem = NSMenuItem(title: "Закрыть все стикеры", action: #selector(closeAllPins), keyEquivalent: "")
+        closeAllItem.target = self
+        closeAllItem.tag = 999
+        menu.addItem(closeAllItem)
         return menu
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        let hasMultiple = PinnedScreenshotManager.shared.windows.count > 1
+        menu.item(withTag: 999)?.isHidden = !hasMultiple
     }
 
     override var canBecomeKey: Bool { true }
 
     override func keyDown(with event: NSEvent) {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if event.keyCode == 53 {
             closePin()
-        } else if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers?.lowercased() == "c" {
+        } else if event.keyCode == 8 && flags == .command {
             copyPinImage()
         } else {
             super.keyDown(with: event)
@@ -231,7 +254,8 @@ final class PinnedScreenshotWindow: NSWindow {
         }
 
         let factor: CGFloat = event.hasPreciseScrollingDeltas ? (1.0 + delta * 0.004) : (delta > 0 ? 1.06 : 0.94)
-        let newScale = min(2.5, max(0.3, currentScale * factor))
+        let minScale = max(0.3, max(72.0 / baseSize.width, 44.0 / baseSize.height))
+        let newScale = min(2.5, max(minScale, currentScale * factor))
         guard abs(newScale - currentScale) > 0.002 else { return }
         currentScale = newScale
 
@@ -246,8 +270,14 @@ final class PinnedScreenshotWindow: NSWindow {
     }
 
     @objc private func closePin() {
+        hintDismissWorkItem?.cancel()
+        hintDismissWorkItem = nil
         self.orderOut(nil)
         onClose?()
+    }
+
+    @objc private func closeAllPins() {
+        PinnedScreenshotManager.shared.closeAll()
     }
 }
 
