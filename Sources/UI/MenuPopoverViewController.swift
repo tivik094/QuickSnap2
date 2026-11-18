@@ -192,7 +192,8 @@ final class MenuPopoverViewController: NSViewController {
 
                 let thumbBtn = ThumbnailTileButton(
                     frame: NSRect(x: tx, y: ty, width: thumbW, height: thumbH),
-                    tokens: tokens
+                    tokens: tokens,
+                    url: url
                 ) { [weak self] in
                     self?.onClosePopover?()
                     ScreenshotWatcher.shared.openEditor(for: url)
@@ -207,20 +208,15 @@ final class MenuPopoverViewController: NSViewController {
             loadThumbnailsAsync(maxPixelSize: Int(max(thumbW, thumbH) * 2))
         }
 
-        // Нижняя панель (чистая, без кисточки)
-        if tokens.isGlass {
-            let footerGlass = NSView(frame: NSRect(x: 12, y: 10, width: width - 24, height: 36))
-            footerGlass.wantsLayer = true
-            footerGlass.layer?.cornerRadius = 10
-            footerGlass.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.10).cgColor
-            footerGlass.layer?.borderWidth = 1.0
-            footerGlass.layer?.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
-            root.addSubview(footerGlass)
-        }
+        // Нижняя панель: чистый горизонтальный разделитель без вложенных рамок
+        let bottomSep = NSView(frame: NSRect(x: 0, y: 46, width: width, height: 1))
+        bottomSep.wantsLayer = true
+        bottomSep.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.10).cgColor
+        root.addSubview(bottomSep)
 
         let folderBtn = PillButton(
-            frame: NSRect(x: 16, y: 13, width: 34, height: 30),
-            title: nil,
+            frame: NSRect(x: 14, y: 9, width: 84, height: 28),
+            title: "Снимки",
             symbolName: "folder",
             cornerRadius: 8
         ) { [weak self] in
@@ -239,9 +235,22 @@ final class MenuPopoverViewController: NSViewController {
         folderBtn.toolTip = "Открыть папку: \(Config.saveDirectory.path)"
         root.addSubview(folderBtn)
 
+        if PinnedScreenshotWindow.allOpen.count > 0 {
+            let closeAllBtn = PillButton(
+                frame: NSRect(x: 104, y: 9, width: 112, height: 28),
+                title: "Закрыть стикеры",
+                symbolName: "xmark.circle",
+                cornerRadius: 8
+            ) {
+                PinnedScreenshotWindow.closeAll()
+            }
+            closeAllBtn.toolTip = "Закрыть все закреплённые стикеры"
+            root.addSubview(closeAllBtn)
+        }
+
         if tokens.showPowerButtonInFooter {
             let quitBtn = PillButton(
-                frame: NSRect(x: width - 50, y: 13, width: 34, height: 30),
+                frame: NSRect(x: width - 46, y: 9, width: 32, height: 28),
                 title: nil,
                 symbolName: "power",
                 isDestructive: true,
@@ -354,10 +363,17 @@ final class MenuPopoverViewController: NSViewController {
         tLabel.frame = NSRect(x: 2, y: 20, width: frame.width - 4, height: 16)
         container.addSubview(tLabel)
 
-        let sLabel = NSTextField.makeLabel(shortcut, size: 10.5, weight: .regular, color: NSColor.white.withAlphaComponent(tokens.isGlass ? 0.72 : 0.55))
+        let keycapW = min(frame.width - 14, max(44, CGFloat(shortcut.count) * 7.5 + 14))
+        let keycap = NSView(frame: NSRect(x: floor((frame.width - keycapW) / 2), y: 5, width: keycapW, height: 16))
+        keycap.wantsLayer = true
+        keycap.layer?.cornerRadius = 4
+        keycap.layer?.backgroundColor = NSColor.white.withAlphaComponent(0.10).cgColor
+
+        let sLabel = NSTextField.makeLabel(shortcut, size: 10.5, weight: .medium, color: NSColor.white.withAlphaComponent(0.80))
         sLabel.alignment = .center
-        sLabel.frame = NSRect(x: 2, y: 4, width: frame.width - 4, height: 14)
-        container.addSubview(sLabel)
+        sLabel.frame = NSRect(x: 0, y: 1, width: keycapW, height: 14)
+        keycap.addSubview(sLabel)
+        container.addSubview(keycap)
 
         return container
     }
@@ -366,6 +382,7 @@ final class MenuPopoverViewController: NSViewController {
 private final class ThumbnailTileButton: NSButton {
     private let tokens: ThemeTokens
     private let onClick: () -> Void
+    private let url: URL
     private let imageLayer = CALayer()
     private var trackingArea: NSTrackingArea?
 
@@ -379,8 +396,9 @@ private final class ThumbnailTileButton: NSButton {
         }
     }
 
-    init(frame: NSRect, tokens: ThemeTokens, onClick: @escaping () -> Void) {
+    init(frame: NSRect, tokens: ThemeTokens, url: URL, onClick: @escaping () -> Void) {
         self.tokens = tokens
+        self.url = url
         self.onClick = onClick
         super.init(frame: frame)
 
@@ -391,7 +409,7 @@ private final class ThumbnailTileButton: NSButton {
         self.layer?.masksToBounds = true
         self.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.24).cgColor
         self.layer?.borderWidth = 1
-        self.layer?.borderColor = NSColor.white.withAlphaComponent(tokens.isGlass ? 0.24 : 0.14).cgColor
+        self.layer?.borderColor = NSColor.white.withAlphaComponent(tokens.isGlass ? 0.26 : 0.18).cgColor
 
         if tokens.cropThumbnailsToFill {
             imageLayer.frame = bounds
@@ -421,11 +439,37 @@ private final class ThumbnailTileButton: NSButton {
     }
 
     override func mouseExited(with event: NSEvent) {
-        layer?.borderColor = NSColor.white.withAlphaComponent(tokens.isGlass ? 0.24 : 0.14).cgColor
+        layer?.borderColor = NSColor.white.withAlphaComponent(tokens.isGlass ? 0.26 : 0.18).cgColor
     }
 
     @objc private func handleTap() {
         onClick()
+    }
+
+    override func rightMouseDown(with event: NSEvent) {
+        let menu = NSMenu()
+        menu.addItem(withTitle: "Открыть в редакторе", action: #selector(openInEditor), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Закрепить поверх окон", action: #selector(pinScreenshot), keyEquivalent: "").target = self
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(withTitle: "Удалить снимок", action: #selector(deleteScreenshot), keyEquivalent: "").target = self
+        NSMenu.popUpContextMenu(menu, with: event, for: self)
+    }
+
+    @objc private func openInEditor() {
+        onClick()
+    }
+
+    @objc private func pinScreenshot() {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let cgImage = CGImageSourceCreateImageAtIndex(src, 0, nil) else { return }
+        let image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+        let pin = PinnedScreenshotWindow(image: image)
+        pin.makeKeyAndOrderFront(nil)
+    }
+
+    @objc private func deleteScreenshot() {
+        try? FileManager.default.removeItem(at: url)
+        NSSound(named: "Funk")?.play()
     }
 }
 

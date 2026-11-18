@@ -14,8 +14,8 @@ final class PreviewPanel: NSPanel {
         self.image = image
         self.fileURL = fileURL
 
-        let panelWidth: CGFloat = 340
-        let panelHeight: CGFloat = 232
+        let panelWidth: CGFloat = 348
+        let panelHeight: CGFloat = 250
         let margin: CGFloat = 24
 
         let mouseLoc = NSEvent.mouseLocation
@@ -77,73 +77,116 @@ final class PreviewPanel: NSPanel {
         shadowWrapper.layer?.shadowOffset = NSSize(width: 0, height: -6)
         shadowWrapper.layer?.shadowRadius = 12
 
+        // Правило внутреннего и внешнего: R_внутр (10) + Padding (12) = R_внеш (22)
+        let pad: CGFloat = 12
+        let innerRadius: CGFloat = 10
+        let outerRadius: CGFloat = innerRadius + pad
+
         let container = NSVisualEffectView(frame: shadowWrapper.bounds)
         container.material = .hudWindow
         container.blendingMode = .behindWindow
         container.state = .active
         container.wantsLayer = true
-        container.layer?.cornerRadius = 16
+        container.layer?.cornerRadius = outerRadius
         container.layer?.masksToBounds = true
         container.layer?.borderWidth = 1
         container.layer?.borderColor = NSColor.white.withAlphaComponent(0.18).cgColor
 
         let cw = container.bounds.width
         let ch = container.bounds.height
+        let btnH: CGFloat = 30
+        let metaH: CGFloat = 18
 
-        let imgBg = NSView(frame: NSRect(x: 12, y: 52, width: cw - 24, height: ch - 64))
+        // Чистое превью без перекрывающих плашек поверх картинки
+        let imgY = pad + btnH + 8 + metaH + 6
+        let imgBg = NSView(frame: NSRect(x: pad, y: imgY, width: cw - pad * 2, height: ch - imgY - pad))
         imgBg.wantsLayer = true
-        imgBg.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.25).cgColor
-        imgBg.layer?.cornerRadius = 10
+        imgBg.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.28).cgColor
+        imgBg.layer?.cornerRadius = innerRadius
         imgBg.layer?.masksToBounds = true
+        imgBg.layer?.borderWidth = 0.5
+        imgBg.layer?.borderColor = NSColor.white.withAlphaComponent(0.10).cgColor
 
         let imageView = NSImageView(frame: imgBg.bounds.insetBy(dx: 4, dy: 4))
         imageView.image = image
         imageView.imageScaling = .scaleProportionallyUpOrDown
         imgBg.addSubview(imageView)
-
-        let resText = "\(Int(pixelSize.width)) × \(Int(pixelSize.height))"
-        let badgeLabel = NSTextField(labelWithString: resText)
-        badgeLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .semibold)
-        badgeLabel.textColor = .white
-        badgeLabel.sizeToFit()
-
-        let badgeW = badgeLabel.frame.width + 12
-        let badgeView = NSView(frame: NSRect(x: imgBg.bounds.width - badgeW - 8, y: 8, width: badgeW, height: 18))
-        badgeView.wantsLayer = true
-        badgeView.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.65).cgColor
-        badgeView.layer?.cornerRadius = 6
-        badgeLabel.frame.origin = NSPoint(x: 6, y: 2)
-        badgeView.addSubview(badgeLabel)
-        imgBg.addSubview(badgeView)
-
         container.addSubview(imgBg)
 
-        let btnY: CGFloat = 12
-        let btnH: CGFloat = 28
+        // Строка метаданных (разрешение и имя файла) под картинкой, не закрывая сам снимок
+        let metaY = pad + btnH + 8
+        let resLabel = NSTextField(labelWithString: "\(Int(pixelSize.width)) × \(Int(pixelSize.height)) px")
+        resLabel.font = NSFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .medium)
+        resLabel.textColor = NSColor.white.withAlphaComponent(0.55)
+        resLabel.frame = NSRect(x: pad + 2, y: metaY, width: 130, height: metaH)
+        container.addSubview(resLabel)
 
-        let editBtn = PillButton(frame: NSRect(x: 12, y: btnY, width: 98, height: btnH), title: "Разметка", symbolName: "pencil.tip.crop.circle", isAccent: true) { [weak self] in
+        let nameLabel = NSTextField(labelWithString: fileURL.lastPathComponent)
+        nameLabel.font = NSFont.systemFont(ofSize: 10.5, weight: .regular)
+        nameLabel.textColor = NSColor.white.withAlphaComponent(0.45)
+        nameLabel.alignment = .right
+        nameLabel.lineBreakMode = .byTruncatingMiddle
+        nameLabel.frame = NSRect(x: pad + 132, y: metaY, width: cw - pad * 2 - 134, height: metaH)
+        container.addSubview(nameLabel)
+
+        // Ряд кнопок с равными внешними отступами (12pt снизу, слева и справа) и радиусом 10pt
+        let btnY: CGFloat = pad
+
+        let editBtn = PillButton(
+            frame: NSRect(x: pad, y: btnY, width: 100, height: btnH),
+            title: "Разметка",
+            symbolName: "pencil.tip.crop.circle",
+            isAccent: true,
+            cornerRadius: innerRadius
+        ) { [weak self] in
             guard let self = self else { return }
             let img = self.image
             let url = self.fileURL
             self.animateOut()
             self.onEditRequested?(img, url)
         }
+        editBtn.toolTip = "Открыть редактор разметки"
 
-        let copyBtn = PillButton(frame: NSRect(x: 116, y: btnY, width: 78, height: btnH), title: "Копия", symbolName: "doc.on.doc") { [weak self] in
+        let copyBtn = PillButton(
+            frame: NSRect(x: pad + 106, y: btnY, width: 80, height: btnH),
+            title: "Копия",
+            symbolName: "doc.on.doc",
+            cornerRadius: innerRadius
+        ) { [weak self] in
             self?.copyAndClose()
         }
+        copyBtn.toolTip = "Скопировать в буфер обмена"
 
-        let finderBtn = PillButton(frame: NSRect(x: 200, y: btnY, width: 32, height: btnH), title: nil, symbolName: "folder") { [weak self] in
+        let finderBtn = PillButton(
+            frame: NSRect(x: pad + 192, y: btnY, width: 32, height: btnH),
+            title: nil,
+            symbolName: "folder",
+            cornerRadius: innerRadius
+        ) { [weak self] in
             self?.revealInFinder()
         }
+        finderBtn.toolTip = "Показать файл в Finder"
 
-        let trashBtn = PillButton(frame: NSRect(x: cw - 74, y: btnY, width: 30, height: btnH), title: nil, symbolName: "trash", isDestructive: true) { [weak self] in
+        let trashBtn = PillButton(
+            frame: NSRect(x: cw - pad - 66, y: btnY, width: 30, height: btnH),
+            title: nil,
+            symbolName: "trash",
+            isDestructive: true,
+            cornerRadius: innerRadius
+        ) { [weak self] in
             self?.deleteScreenshot()
         }
+        trashBtn.toolTip = "Удалить скриншот"
 
-        let closeBtn = PillButton(frame: NSRect(x: cw - 40, y: btnY, width: 30, height: btnH), title: nil, symbolName: "xmark") { [weak self] in
+        let closeBtn = PillButton(
+            frame: NSRect(x: cw - pad - 30, y: btnY, width: 30, height: btnH),
+            title: nil,
+            symbolName: "xmark",
+            cornerRadius: innerRadius
+        ) { [weak self] in
             self?.animateOut()
         }
+        closeBtn.toolTip = "Закрыть предпросмотр"
 
         container.addSubview(editBtn)
         container.addSubview(copyBtn)

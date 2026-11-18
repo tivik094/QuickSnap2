@@ -36,7 +36,7 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
 
     private var currentTab: SettingsTab
     private var tabButtons: [SidebarTabItem] = []
-    private let headerTitle = NSTextField(labelWithString: "Общий")
+    private let headerTitle = NSTextField(labelWithString: "Основные")
     private let contentContainer = NSView()
     private var pathField: NSTextField?
     private var activeRecorder: ShortcutRecorderButton?
@@ -67,9 +67,7 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
         self.isReleasedWhenClosed = false
         self.delegate = self
 
-        // Убираем серые неактивные заглушки вместо жёлтой и зелёной кнопок
-        self.standardWindowButton(.miniaturizeButton)?.isHidden = true
-        self.standardWindowButton(.zoomButton)?.isHidden = true
+        // Стандартная группа кнопок управления окном macOS (светофор)
 
         let root = NSView(frame: NSRect(x: 0, y: 0, width: width, height: height))
         root.wantsLayer = true
@@ -82,14 +80,14 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
         sidebar.wantsLayer = true
 
         let items: [(SettingsTab, String, String)] = [
-            (.general, "Общий", "slider.horizontal.3"),
+            (.general, "Основные", "gearshape"),
             (.video, "Видео", "video"),
             (.hotkeys, "Горячие клавиши", "command"),
             (.about, "О программе", "info.circle")
         ]
 
         for (idx, item) in items.enumerated() {
-            let y = height - 72 - CGFloat(idx) * 38
+            let y = height - 86 - CGFloat(idx) * 38
             let btn = SidebarTabItem(
                 frame: NSRect(x: 12, y: y, width: sidebarW - 24, height: 32),
                 title: item.1,
@@ -206,7 +204,7 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
         contentContainer.subviews.forEach { $0.removeFromSuperview() }
         switch tab {
         case .general:
-            headerTitle.stringValue = "Общий"
+            headerTitle.stringValue = "Основные"
             buildGeneralTab()
         case .video:
             headerTitle.stringValue = "Видео"
@@ -451,7 +449,7 @@ private final class SettingsWindow: NSWindow, NSWindowDelegate {
         badge.layer?.backgroundColor = accentColor.withAlphaComponent(0.25).cgColor
         badge.layer?.borderWidth = 1
         badge.layer?.borderColor = accentColor.withAlphaComponent(0.45).cgColor
-        let verLbl = NSTextField.makeLabel("v2.1.0", size: 11, weight: .semibold, color: .white)
+        let verLbl = NSTextField.makeLabel("v2.2.0", size: 11, weight: .semibold, color: .white)
         verLbl.alignment = .center
         verLbl.frame = NSRect(x: 0, y: 2, width: 54, height: 15)
         badge.addSubview(verLbl)
@@ -908,8 +906,9 @@ private final class AccentSegmentedControl: NSView {
         bgView.layer?.borderColor = NSColor.white.withAlphaComponent(0.12).cgColor
         addSubview(bgView)
 
-        let segW = floor((frame.width - 4) / CGFloat(options.count))
-        thumbView.frame = NSRect(x: 2 + CGFloat(selectedIndex) * segW, y: 2, width: segW, height: frame.height - 4)
+        let pad: CGFloat = 3
+        let segW = floor((frame.width - pad * 2) / CGFloat(options.count))
+        thumbView.frame = NSRect(x: pad + CGFloat(selectedIndex) * segW, y: pad, width: segW, height: frame.height - pad * 2)
         thumbView.wantsLayer = true
         thumbView.layer?.cornerRadius = 6
         thumbView.layer?.backgroundColor = accentColor.cgColor
@@ -919,7 +918,7 @@ private final class AccentSegmentedControl: NSView {
             let lbl = NSTextField(labelWithString: title)
             lbl.alignment = .center
             lbl.font = NSFont.systemFont(ofSize: 12, weight: .semibold)
-            lbl.frame = NSRect(x: 2 + CGFloat(idx) * segW, y: floor((frame.height - 16) / 2), width: segW, height: 16)
+            lbl.frame = NSRect(x: pad + CGFloat(idx) * segW, y: floor((frame.height - 16) / 2), width: segW, height: 16)
             addSubview(lbl)
             labels.append(lbl)
         }
@@ -937,14 +936,15 @@ private final class AccentSegmentedControl: NSView {
     override func mouseUp(with event: NSEvent) {
         let pt = convert(event.locationInWindow, from: nil)
         guard bounds.contains(pt), !labels.isEmpty else { return }
-        let segW = floor((bounds.width - 4) / CGFloat(labels.count))
-        let idx = min(labels.count - 1, max(0, Int((pt.x - 2) / segW)))
+        let pad: CGFloat = 3
+        let segW = floor((bounds.width - pad * 2) / CGFloat(labels.count))
+        let idx = min(labels.count - 1, max(0, Int((pt.x - pad) / segW)))
         guard idx != selectedIndex else { return }
         selectedIndex = idx
         updateTextColors()
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = 0.15
-            self.thumbView.animator().frame.origin.x = 2 + CGFloat(idx) * segW
+            self.thumbView.animator().frame.origin.x = pad + CGFloat(idx) * segW
         }
         onSelect(idx)
     }

@@ -2,9 +2,9 @@
 set -e
 
 STAGING="/tmp/QuickSnap_DMG_Staging"
-RW_DMG="/tmp/QuickSnap_2.1_rw.dmg"
-FINAL_DMG="$HOME/Desktop/QuickSnap_2.1.dmg"
-VOL_NAME="QuickSnap 2.1"
+RW_DMG="/tmp/QuickSnap_2.2_rw.dmg"
+FINAL_DMG="$HOME/Desktop/QuickSnap_2.2.dmg"
+VOL_NAME="QuickSnap 2.2"
 
 hdiutil detach "/Volumes/$VOL_NAME" -force 2>/dev/null || true
 rm -rf "$STAGING" "$RW_DMG" "$FINAL_DMG"
@@ -30,7 +30,7 @@ let titleAttrs: [NSAttributedString.Key: Any] = [
     .font: NSFont.systemFont(ofSize: 15, weight: .semibold),
     .foregroundColor: NSColor(calibratedWhite: 0.15, alpha: 1.0)
 ]
-let titleStr = "Перетащите QuickSnap 2.1 в папку Программы" as NSString
+let titleStr = "Перетащите QuickSnap 2.2 в папку Программы" as NSString
 let titleSize = titleStr.size(withAttributes: titleAttrs)
 titleStr.draw(at: NSPoint(x: (w - titleSize.width) / 2, y: h - 44), withAttributes: titleAttrs)
 
@@ -69,18 +69,18 @@ if let tiff = img.tiffRepresentation,
 }
 '
 
-cp -R "/Applications/QuickSnap 2.1.app" "$STAGING/"
+cp -R "/Applications/QuickSnap 2.2.app" "$STAGING/"
 ln -s /Applications "$STAGING/Applications"
 
 cat << 'EOF' > "$STAGING/Снять карантин.command"
 #!/bin/bash
-APP_PATH="/Applications/QuickSnap 2.1.app"
+APP_PATH="/Applications/QuickSnap 2.2.app"
 if [ -d "$APP_PATH" ]; then
     xattr -cr "$APP_PATH"
-    echo "✅ Карантин снят! Запускаю QuickSnap 2.1..."
+    echo "✅ Карантин снят! Запускаю QuickSnap 2.2..."
     open "$APP_PATH"
 else
-    echo "⚠️ Сначала перетащите «QuickSnap 2.1» в папку «Applications» (Программы), затем запустите этот файл снова."
+    echo "⚠️ Сначала перетащите «QuickSnap 2.2» в папку «Applications» (Программы), затем запустите этот файл снова."
     read -r -p "Нажмите Enter, чтобы закрыть окно..."
 (sleep 0.3 && osascript -e 'tell application "Terminal" to close (every window whose name contains "QuickSnap" or name contains ".command") saving no') >/dev/null 2>&1 &
 exit 0
@@ -90,7 +90,7 @@ chmod +x "$STAGING/Снять карантин.command"
 
 cat << 'EOF' > "$STAGING/Сбросить и удалить.command"
 #!/bin/bash
-APP_PATH="/Applications/QuickSnap 2.1.app"
+APP_PATH="/Applications/QuickSnap 2.2.app"
 BUNDLE_ID="com.v.QuickSnap2"
 
 if [ -f "$APP_PATH/Contents/Info.plist" ]; then
@@ -100,11 +100,11 @@ if [ -f "$APP_PATH/Contents/Info.plist" ]; then
     fi
 fi
 
-echo "🧹 Останавливаем QuickSnap 2.1..."
+echo "🧹 Останавливаем QuickSnap 2.2..."
 pkill -f "QuickSnap" 2>/dev/null || true
 
 echo "🗑 Удаляем приложение и кэши..."
-rm -rf "/Applications/QuickSnap 2.1.app" "$HOME/Applications/QuickSnap 2.1.app"
+rm -rf "/Applications/QuickSnap 2.2.app" "$HOME/Applications/QuickSnap 2.2.app"
 rm -rf "$HOME/Library/Caches/"*QuickSnap*
 rm -rf "$HOME/Library/Saved Application State/"*QuickSnap*
 rm -rf "$HOME/Library/Logs/DiagnosticReports/"QuickSnap*
@@ -117,7 +117,7 @@ tccutil reset All "$BUNDLE_ID" 2>/dev/null || true
 tccutil reset ScreenCapture "$BUNDLE_ID" 2>/dev/null || true
 
 echo ""
-echo "✅ QuickSnap 2.1, настройки и разрешения полностью удалены."
+echo "✅ QuickSnap 2.2, настройки и разрешения полностью удалены."
 read -r -p "Нажмите Enter, чтобы закрыть окно..."
 (sleep 0.3 && osascript -e 'tell application "Terminal" to close (every window whose name contains "QuickSnap" or name contains ".command") saving no') >/dev/null 2>&1 &
 exit 0
@@ -126,16 +126,17 @@ chmod +x "$STAGING/Сбросить и удалить.command"
 
 cat << 'EOF' > "$STAGING/README — Установка и возможности.txt"
 ============================================================
-QuickSnap 2.1 — Быстрые скриншоты и запись экрана для macOS
+QuickSnap 2.2 — Быстрые скриншоты и запись экрана для macOS
 ============================================================
 
 О ПРОГРАММЕ
-QuickSnap 2.1 — лёгкая нативная утилита в строке меню (menu bar)
+QuickSnap 2.2 — лёгкая нативная утилита в строке меню (menu bar)
 для мгновенных скриншотов, разметки и записи видео с экрана.
 
 Что умеет:
 • Скриншот выбранной области или отдельного окна с 1:1 Retina-чёткостью.
-• Встроенный редактор разметки (стрелки, рамки, выделение, текст, размытие).
+• Встроенный редактор разметки (стрелки, рамки, пикселизация, живое кадрирование).
+• Офлайн-распознавание текста (OCR, ru-RU / en-US) прямо из редактора (⌘T).
 • Плавающее превью после снимка: быстрое копирование в буфер, переход
   к разметке, показ файла в Finder или удаление в один клик.
 • Запись видео с экрана в MP4 (HEVC / H.265) с выбором 30 или 60 FPS.
@@ -148,7 +149,7 @@ QuickSnap 2.1 — лёгкая нативная утилита в строке �
 УСТАНОВКА И ПЕРВЫЙ ЗАПУСК
 ------------------------------------------------------------
 
-1. Перетащите «QuickSnap 2.1» в папку «Applications» (Программы)
+1. Перетащите «QuickSnap 2.2» в папку «Applications» (Программы)
    рядом в этом окне.
 
 2. Снятие карантина macOS (обязательно перед первым запуском):
@@ -160,7 +161,7 @@ QuickSnap 2.1 — лёгкая нативная утилита в строке �
    в этом окне — он сам снимет блокировку и запустит программу.
 
    Способ Б (через Терминал): выполните команду:
-   xattr -cr "/Applications/QuickSnap 2.1.app"
+   xattr -cr "/Applications/QuickSnap 2.2.app"
 
 3. Настройка прав при первом запуске:
    • Выберите папку для сохранения снимков (по умолчанию Desktop/Screenshots).
@@ -206,7 +207,7 @@ tell application "Finder"
         set text size of viewOptions to 12
         set background picture of viewOptions to POSIX file "$MOUNT_DIR/bg.png"
 
-        set position of item "QuickSnap 2.1.app" of container window to {185, 145}
+        set position of item "QuickSnap 2.2.app" of container window to {185, 145}
         set position of item "Applications" of container window to {455, 145}
         set position of item "README — Установка и возможности.txt" of container window to {135, 325}
         set position of item "Снять карантин.command" of container window to {320, 325}
